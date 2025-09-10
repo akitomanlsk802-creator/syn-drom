@@ -1,0 +1,38 @@
+✅ สรุปปัญหา
+
+ตอนนี้ treatmentsData มี 20 รายการ → เกิน spec
+
+เกณฑ์ DoD เขียนไว้ว่า test ต้องตรวจว่า จำนวนท่า = 19 และแต่ละ core pain point (neck, shoulders, upper_back, lower_back, wrist, forearm) มี ≥ 2 ท่า
+
+🔧 แนวทางแก้
+
+ตัดท่า 1 ทิ้ง ให้เหลือ 19:
+
+ตัวเลือกที่ปลอดภัยสุดคือ ลบท่า ankle_circles เพราะ pain point = calf ยังเหลือ standing_calf_stretch ดูแลได้อยู่ และ calf ไม่ใช่ core pain point
+
+(ถ้าอยากคงข้อเท้าไว้ → ลบท่า breathing_microbreak แทนได้ แต่จะเสียฟีเจอร์ไมโครบรีค)
+
+ยืนยันหลังแก้:
+
+treatmentsData.length == 19
+
+ไม่มี duplicated id
+
+Core pain point (neck, shoulders, upper_back, lower_back, wrist, forearm) มี ≥ 2 ท่า
+
+รัน test อีกครั้ง:
+
+flutter test test/unit/data_static_test.dart -r expanded
+
+
+ต้องผ่านทุกเคส
+
+📢 สิ่งที่ต้องบอก Dev
+
+Spec v6 บังคับว่า treatments = 19 ท่า ครอบคลุม 8 จุด
+
+ตอนนี้เกินเป็น 20 → ให้ลบ ankle_circles ออก
+
+ยืนยันว่า core pain point แต่ละอันยัง ≥ 2 ท่า
+
+รัน test จน treatmentsData.length == 19 และทุก assertion ผ่าน

@@ -1,0 +1,3139 @@
+﻿📋 Office Syndrome Helper - Complete Requirements Document v5.0
+🎯 Executive Summary
+Office Syndrome Helper เป็นแอปพลิเคชัน Android ที่ออกแบบมาเพื่อช่วยเหลือคนทำงานออฟฟิศในการป้องกันและแก้ไขปัญหา Office Syndrome ผ่านระบบแจ้งเตือนที่ฉลาดและการออกกำลังกายแบบเฉพาะเจาะจง
+ปัญหาที่แก้ไข
+* คนทำงานออฟฟิศมักลืมลุกขยับตัว เลยปวดเมื่อยเรื้อรัง
+* ท่าออกกำลังกายที่จำเจ ทำให้เบื่อและไม่ต่อเนื่อง
+* ไม่รู้ว่าปวดจุดไหนควรทำท่าไหน
+* ไม่มีระบบติดตามความก้าวหน้า
+โซลูชันที่นำเสนอ
+1. ระบบแจ้งเตือนอัจฉริยะ - คำนวณเวลาแม่นยำ รองรับช่วงพัก
+2. การสุ่มท่าออกกำลังกาย - ไม่จำเจ เฉพาะจุดที่ปวด
+3. ระบบติดตามสถิติ - Charts แสดงความก้าวหน้า
+4. ความยืดหยุ่น - ปรับช่วงพัก เลื่อน ข้าม ได้ตามสะดวก
+________________
+
+
+🏗️ System Architecture Overview
+Platform & Technical Stack
+* Platform: Android เท่านั้น (API 26+ / Android 8.0+)
+
+* Framework: Flutter 3.32.x / Dart 3.8.x
+
+* State Management: GetX 4.6.6+
+
+* Database: Hive (Local-only / Offline-first) + เข้ารหัสด้วยคีย์ใน flutter_secure_storage
+
+* Notifications: flutter_local_notifications 19.x (ใช้ AndroidScheduleMode.exactAllowWhileIdle)
+
+* Background Tasks: WorkManager 0.9.x (แทน android_alarm_manager_plus) + Boot-safe
+
+* Timezones: timezone 0.10.x (ตั้ง Asia/Bangkok)
+
+* Charts: fl_chart 1.1.0 (+ vector_math >=2.2.0) และ syncfusion_flutter_charts 31.x (ถ้าต้องใช้ฟีเจอร์ขั้นสูง)
+
+* Architecture: Feature-based + Clean Architecture
+
+* Design System: Material Design 3
+
+* Android Build: compileSdk 35 / targetSdk 35 / minSdk 26 / JDK 17 / core 
+library desugaring 2.1.4
+Android Gradle (สำคัญให้บิลด์ผ่านปี 2025)
+android {
+  compileSdk 35
+  defaultConfig { minSdk 26; targetSdk 35 }
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+    coreLibraryDesugaringEnabled true
+  }
+}
+dependencies {
+  coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"
+}
+kotlinOptions { jvmTarget = "17" }
+
+
+ระบุชัดว่า แพลตฟอร์ม Android เท่านั้น (ตัด iOS ออก)
+ย้ำการยกเครื่อง: ใช้ WorkManager แทน android_alarm_manager_plus, FLN 19.x, offline-first + encrypted Hive, และ บันทึกภาพด้วย gal
+
+
+
+
+________________
+
+
+📊 Data Models & Database Design
+Core Models (Hive TypeIDs)
+สำคัญ
+   * สงวนหมายเลข TypeID เดิม และ อย่าเปลี่ยน ในอนาคต เพื่อให้ migration ง่าย
+
+   * ใช้ HiveAesCipher (กุญแจเก็บใน flutter_secure_storage) กับทุกกล่องข้อมูลจริง
+
+   * อย่าเก็บ TimeOfDay ลง Hive โดยตรง → เก็บเป็น “นาทีตั้งแต่ 00:00” (int) แล้วค่อยแม็ปเป็น TimeOfDay ในโค้ด
+
+________________
+
+
+UserSettings (@HiveType(typeId: 0))
+เก็บค่าตั้งค่ารวมทั้งหมดของผู้ใช้ (หนึ่งแถวเดียวในกล่อง settings)
+@HiveType(typeId: 0)
+class UserSettings extends HiveObject {
+  // จุดปวดที่เลือก (อ้างอิง id 1..8 ด้านล่าง)
+  // หมายเหตุ: ฐานข้อมูล "ยืดหยุ่น" 1..8 รายการได้
+  // แต่ใน Onboarding/Setup "UI จะบังคับ" ให้เลือก >= 3 เพื่อไปต่อ
+  @HiveField(0)  List<int> selectedPainPointIds;
+
+
+  // นาทีระหว่างการแจ้งเตือน (ช่วงที่รองรับ: 30..120)
+  @HiveField(1)  int notificationIntervalMinutes;
+
+
+  // เวลาทำงาน (เก็บเป็นนาทีตั้งแต่ 00:00 เพื่อง่ายต่อการคำนวณ/ค้นหา)
+  @HiveField(2)  int workStartMinutes;    // default:  9*60  = 540 (09:00)
+  @HiveField(3)  int workEndMinutes;      // default: 17*60  = 1020 (17:00)
+
+
+  // วันทำงาน: 1=จันทร์ ... 7=อาทิตย์ (สามารถใส่ครบทั้ง 7 วัน)
+  @HiveField(4)  List<int> workingDays;
+
+
+  // รายการช่วงพัก — เก็บเป็น Map เพื่อหลีกเลี่ยงปัญหา codegen/adapter
+  // รูปแบบแต่ละรายการ:
+  // {
+  //   "enabledDays": <List<int>>,      // 1..7
+  //   "startMinutes": <int>,           // 0..1439
+  //   "endMinutes": <int>,             // 0..1439
+  //   "name": <String?>                // ชื่อช่วงพัก (optional)
+  // }
+  @HiveField(5)  List<Map<String, dynamic>> breakPeriods;
+
+
+  // เสียง/สั่น/เปิดระบบแจ้งเตือน
+  @HiveField(6)  bool soundEnabled;
+  @HiveField(7)  bool vibrationEnabled;
+  @HiveField(8)  bool notificationEnabled;
+
+
+  // จำกัดจำนวน snooze ต่อ session (default: 3)
+  @HiveField(9)  int maxSnoozeCount;
+
+
+  // เคยผ่าน flow ขอสิทธิ์ (notifications ฯลฯ) แล้วหรือยัง
+  @HiveField(10) bool hasRequestedPermissions;
+
+
+  // เวลาที่แจ้งเตือนล่าสุด (ใช้คำนวณช่วงคงที่แบบ fixed interval)
+  @HiveField(11) DateTime? lastNotificationTime;
+
+
+  // อ้างอิง session ปัจจุบัน (ถ้ามี)
+  @HiveField(12) String? currentSessionId;
+}
+
+
+ข้อกำหนด/ข้อควรระวัง
+      * Validation:
+
+         * notificationIntervalMinutes ∈ [30, 120]
+
+         * workStartMinutes < workEndMinutes และทั้งคู่ ∈ [0, 1439]
+
+         * workingDays ต้องมีเลขในช่วง 1..7
+
+         * ช่วงพัก ห้ามซ้อนเวลา ภายในวันเดียวกัน (ตรวจตอนบันทึก UI/Service)
+
+            * Mapping Utilities (แนะนำให้มีในโค้ด):
+
+               * TimeOfDay toTimeOfDay(int minutes) / int toMinutes(TimeOfDay t)
+
+________________
+
+
+NotificationSession (@HiveType(typeId: 1))
+บันทึก “รอบแจ้งเตือน/การออกท่า” ทีละครั้ง
+@HiveType(typeId: 1)
+class NotificationSession extends HiveObject {
+  @HiveField(0)  String id;                   // UUID
+  @HiveField(1)  DateTime scheduledTime;      // เวลาที่ "ตั้ง" ไว้
+  @HiveField(2)  DateTime? actualTime;        // เวลาที่ "แจ้งจริง" (หากเลื่อน/ดีเลย์)
+  @HiveField(3)  int painPointId;             // จุดปวดที่ใช้ในรอบนี้ (1..8)
+  @HiveField(4)  List<int> treatmentIds;      // ท่าที่สุ่มได้ (แนะนำ 2 ท่า)
+  @HiveField(5)  SessionStatus status;        // สถานะรอบ
+  @HiveField(6)  int snoozeCount;             // จำนวนครั้งที่ snooze จริง
+  @HiveField(7)  DateTime? completedTime;     // เวลาจบการทำท่า
+  @HiveField(8)  List<bool> treatmentCompleted; // เช่น [true,false] ตามจำนวนท่า
+  @HiveField(9)  int durationSeconds;         // เวลาใช้งานจริงของรอบนี้ (รวมสองท่า)
+}
+
+
+@HiveType(typeId: 10) // แยก typeId สำหรับ enum (กันชนกับโมเดลอื่น)
+enum SessionStatus {
+  @HiveField(0) scheduled,
+  @HiveField(1) inProgress,
+  @HiveField(2) completed,
+  @HiveField(3) snoozed,
+  @HiveField(4) skipped,
+}
+
+
+ข้อกำหนด
+                  * treatmentCompleted.length == treatmentIds.length
+
+                  * เมื่อ status == completed → ต้องมี completedTime
+
+                  * บันทึก snoozeCount ≤ UserSettings.maxSnoozeCount
+
+________________
+
+
+DailyStats (@HiveType(typeId: 3))
+สรุปสถิติรายวัน (กล่อง daily_stats)
+@HiveType(typeId: 3)
+class DailyStats extends HiveObject {
+  @HiveField(0) DateTime date;                      // วันที่ (แนะนำ normalized: 00:00)
+  @HiveField(1) int totalNotifications;             // แจ้งเตือนทั้งหมด
+  @HiveField(2) int completedSessions;              // ทำเสร็จ
+  @HiveField(3) int snoozedSessions;                // เลื่อน
+  @HiveField(4) int skippedSessions;                // ข้าม
+  @HiveField(5) Map<int, int> painPointFrequency;   // id จุดปวด → ความถี่
+  @HiveField(6) int totalDurationSeconds;           // เวลารวมที่ใช้จริง
+
+
+  double get successRate =>
+      totalNotifications > 0 ? (completedSessions / totalNotifications) * 100 : 0.0;
+}
+
+
+ข้อกำหนด
+                     * ใช้เฉพาะช่วงสรุป: วันนี้ / 7 / 30 / 90 วัน / เดือนนี้ / เดือนก่อน
+
+                     * เก็บย้อนหลังอย่างน้อย 365 วัน + job cleanup เกินนโยบาย
+
+________________
+
+
+BreakPeriod (ไม่ใช้ Hive Type / ไม่มี TypeID)
+เหตุผล: ลดจุดพังจาก codegen/adapter และง่ายต่อการ migration ในอนาคต
+การเก็บจริง: บันทึกเป็น Map<String, dynamic> ใน UserSettings.breakPeriods
+ สัญญาโครงสร้างของ Map:
+class BreakPeriod {
+  final List<int> enabledDays; // 1..7
+  final int startMinutes;      // 0..1439
+  final int endMinutes;        // 0..1439
+  final String? name;          // optional
+
+
+  const BreakPeriod({
+    required this.enabledDays,
+    required this.startMinutes,
+    required this.endMinutes,
+    this.name,
+  });
+
+
+  // Getter อำนวยความสะดวก (UI/Service ใช้ในหน่วย TimeOfDay)
+  TimeOfDay get startTime => TimeOfDay(hour: startMinutes ~/ 60, minute: startMinutes % 60);
+  TimeOfDay get endTime   => TimeOfDay(hour: endMinutes ~/ 60,   minute: endMinutes % 60);
+
+
+  Map<String, dynamic> toMap() => {
+    'enabledDays': enabledDays,
+    'startMinutes': startMinutes,
+    'endMinutes': endMinutes,
+    'name': name,
+  };
+
+
+  factory BreakPeriod.fromMap(Map<String, dynamic> m) => BreakPeriod(
+    enabledDays: (m['enabledDays'] as List).cast<int>(),
+    startMinutes: m['startMinutes'] as int,
+    endMinutes: m['endMinutes'] as int,
+    name: m['name'] as String?,
+  );
+}
+
+
+ตัวอย่างค่าใน UserSettings.breakPeriods
+[
+  {"enabledDays":[1,2,3,4,5], "startMinutes":720, "endMinutes":780, "name":"พักกลางวัน"}, 
+  {"enabledDays":[1], "startMinutes":600, "endMinutes":630, "name":"ประชุมทีม"}
+]
+
+
+________________
+
+
+Static Data Models (ไม่เก็บใน Hive)
+PainPoint
+class PainPoint {
+  final int id;                 // 1..8
+  final String name;            // เช่น "คอ"
+  final String description;     // คำอธิบายสั้น ๆ
+  final List<int> treatmentIds; // ท่าที่เกี่ยวข้อง
+}
+
+
+8 จุดหลัก
+                        1. คอ
+
+                        2. บ่าและไหล่
+
+                        3. หลังส่วนบน
+
+                        4. หลังส่วนล่าง
+
+                        5. แขน/ศอก
+
+                        6. ข้อมือ/มือ/นิ้ว
+
+                        7. ขา
+
+                        8. เท้า
+
+Treatment
+class Treatment {
+  final int id;
+  final String name;
+  final String description;
+  final int durationSeconds; // เวลาที่แนะนำต่อท่า
+  final int painPointId;     // 1..8
+}
+
+
+จำนวนท่า: อย่างน้อย 19 ท่า ครอบคลุมทั้ง 8 จุด
+________________
+
+
+Boxes & Encryption
+                           * Boxes
+
+                              * settings → เก็บ UserSettings (แถวเดียว)
+
+                              * sessions → เก็บ NotificationSession (เพิ่มตามการใช้งาน)
+
+                              * daily_stats → เก็บ DailyStats (หนึ่งแถวต่อวัน)
+
+                                 * Encryption
+
+                                    * สร้าง/อ่านคีย์จาก flutter_secure_storage
+
+                                    * เปิดแต่ละ box ด้วย HiveAesCipher(key)
+
+                                    * หลีกเลี่ยงการล็อกคีย์แบบฮาร์ดโค้ดทุกชนิด
+
+________________
+
+
+Index/Query & Performance Notes
+                                       * วันที่สำหรับ daily_stats แนะนำ normalize เป็น 00:00 (UTC หรือ local ตามนโยบาย แนะนำ: local + timezone ตั้ง Asia/Bangkok)
+
+                                       * รวมสถิติแบบ O(n) เฉพาะช่วงที่ร้องขอ (เช่น 7/30/90 วัน) และ cache ข้อมูลที่คำนวณแล้ว ~5 วินาที เพื่อลดงานซ้ำ
+
+                                       * ห้ามอ่านทั้งกล่องทุกครั้งในหน้า UI ให้อ่านเฉพาะช่วง/แถวที่ต้องใช้
+
+________________
+
+
+Validation & Invariants (สรุป)
+                                          * selectedPainPointIds: อนุญาต 1..8 รายการ; UI บังคับ ≥ 3 ตอน onboarding
+
+                                          * notificationIntervalMinutes: 30..120
+
+                                          * workStartMinutes < workEndMinutes
+
+                                          * BreakPeriod รายการในวันเดียวกัน ห้ามซ้อนเวลา
+
+                                          * DailyStats.successRate คำนวณจาก completed / total × 100
+
+________________
+
+
+Migration (จากสคีมาที่มี TimeOfDay/Adapter เดิม)
+                                             1. UserSettings
+
+                                                * ย้าย TimeOfDay workStartTime/workEndTime → int workStartMinutes/workEndMinutes
+
+                                                * ปรับ validate + UI binding ให้ใช้ตัวช่วย toMinutes()/toTimeOfDay()
+
+                                                   2. BreakPeriod
+
+                                                      * เลิกใช้ @HiveType + TimeOfDay ใน BreakPeriod
+
+                                                      * แปลงเป็น Map<String,dynamic>:
+
+                                                         * startTime/endTime → startMinutes/endMinutes
+
+                                                         * เพิ่ม enabledDays ถ้ายังไม่มี
+
+                                                            3. Rebuild
+
+                                                               * ลบไฟล์ *.g.dart ของ BreakPeriod (ถ้ายังเหลือ)
+
+                                                               * flutter clean && flutter pub get
+
+
+
+
+________________
+
+
+🔄 Core Business Logic
+1) First Time Setup Flow
+Step 1: Splash Screen (Boot & Route)
+class SplashController extends GetxController {
+  @override
+  Future<void> onReady() async {
+    await DatabaseService.initialize();           // 1) เปิด Hive + Encryption
+    final settings = await DatabaseService.loadOrCreateDefaults(); // 2) โหลด/สร้างค่าเริ่มต้น
+    await NotificationService.initialize();       // 3) เตรียมช่องทางแจ้งเตือน
+    await BackgroundScheduler.ensureRegistered(); //    ลงทะเบียน WorkManager (ครั้งเดียว)
+    // 4) นำทาง: ถ้ายังไม่เลือกจุดปวดอย่างน้อย 1 จุด → ไป Setup
+    if ((settings.selectedPainPointIds).isEmpty) {
+      Get.offAllNamed('/setup'); 
+    } else {
+      Get.offAllNamed('/home');
+    }
+  }
+}
+
+
+Step 2: Permission Management (อัปเดต 2025)
+ใช้ permission_handler + FLN 19.x
+ไม่ต้องขอ SCHEDULE_EXACT_ALARM เพราะเราใช้ AndroidScheduleMode.exactAllowWhileIdle (ยกเว้นคุณเลือกใช้ AlarmManager เอง)
+class PermissionService {
+  static Future<bool> checkAndRequestPermissions() async {
+    final s = await DatabaseService.loadSettings();
+    if (!s.hasRequestedPermissions) {
+      final ok = await _requestAllNeeded();
+      await DatabaseService.saveSettings(s..hasRequestedPermissions = true);
+      return ok;
+    }
+    return await _checkCurrentStatus();
+  }
+
+
+  static Future<bool> _requestAllNeeded() async {
+    // Android 13+ จะถาม POST_NOTIFICATIONS แบบ runtime
+    final notif = await Permission.notification.request();
+    // อื่น ๆ ที่เป็น manifest permission: VIBRATE, WAKE_LOCK, RECEIVE_BOOT_COMPLETED (ไม่ต้องถาม runtime)
+    return notif.isGranted || notif.isLimited;
+  }
+
+
+  static Future<bool> _checkCurrentStatus() async {
+    final status = await Permission.notification.status;
+    return status.isGranted || status.isLimited;
+  }
+}
+
+
+// Required (ประกาศใน Manifest):
+// - POST_NOTIFICATIONS (Android 13+ เป็น runtime)
+// - RECEIVE_BOOT_COMPLETED (รีบูตแล้วยังทำงาน)
+// - VIBRATE, WAKE_LOCK
+
+
+Step 3: Pain Points Selection ⭐ (ปรับ)
+                                                                  * UI ให้เลือก 1–3 จุด (ขั้นต่ำ 1, สูงสุด 3)
+
+                                                                  * แสดง Feedback/คำแนะนำแบบเป็นมิตร
+
+                                                                  * บันทึกลง UserSettings.selectedPainPointIds
+
+class PainPointSelectionController extends GetxController {
+  final selected = <int>{}.obs; // ชุด id: 1..8
+  bool get isValid => selected.isNotEmpty && selected.length <= 3;
+
+
+  void toggle(int id) {
+    if (selected.contains(id)) {
+      selected.remove(id);
+    } else if (selected.length < 3) {
+      selected.add(id);
+    }
+  }
+
+
+  Future<void> save() async {
+    if (!isValid) return;
+    final s = await DatabaseService.loadSettings();
+    s.selectedPainPointIds = selected.toList();
+    await DatabaseService.saveSettings(s);
+  }
+}
+
+
+Step 4: Default Configuration ⭐ (อัปเดตเก็บเป็น “นาที”)
+โครงนี้ตรงกับ Data Models v6 (ไม่เก็บ TimeOfDay ลง Hive)
+ถ้าคุณเรียกใช้จาก DatabaseService.loadOrCreateDefaults()
+extension Defaults on UserSettings {
+  static UserSettings create() => UserSettings()
+    ..selectedPainPointIds   = []                // จาก Step 3 (1–3 จุด)
+    ..notificationIntervalMinutes = 60           // นาที (30..120)
+    ..workStartMinutes       = 9 * 60            // 09:00
+    ..workEndMinutes         = 17 * 60           // 17:00
+    ..workingDays            = [1,2,3,4,5]       // จ–ศ (ปรับได้ 7 วัน)
+    ..breakPeriods           = []                // เก็บเป็น List<Map> (ไม่บังคับ)
+    ..soundEnabled           = true
+    ..vibrationEnabled       = true
+    ..notificationEnabled    = true
+    ..maxSnoozeCount         = 3
+    ..hasRequestedPermissions= false
+    ..lastNotificationTime   = null
+    ..currentSessionId       = null;
+}
+
+
+________________
+
+
+2) Smart Notification System
+Fixed-Interval Timing Logic (เร็วและข้าม boundary ได้)
+คำนวณ “เวลาถัดไป” จาก lastNotificationTime + interval (หรือจาก now + interval ถ้ายังไม่เคยมี), แล้ว กระโดดข้าม ช่วงที่ไม่ถูกต้อง (นอกเวลางาน/ไม่ใช่วันทำงาน/ทับช่วงพัก) โดยไม่ไล่เพิ่มทีละนาที
+class NotificationController extends GetxController {
+  DateTime calculateNextNotificationTime() {
+    final settings = Get.find<SettingsController>().settings.value;
+    final interval = Duration(minutes: settings.notificationIntervalMinutes);
+
+
+    final base = settings.lastNotificationTime ?? DateTime.now();
+    final seed = base.add(interval);  // candidate เริ่มต้น
+
+
+    return _findNextValidTime(seed, settings);
+  }
+
+
+  DateTime _findNextValidTime(DateTime cand, UserSettings s) {
+    tz.initializeTimeZones(); // ทำครั้งเดียวใน bootstrap จริง
+    final local = tz.getLocation('Asia/Bangkok');
+
+
+    while (true) {
+      final weekday = cand.weekday;
+      if (!s.workingDays.contains(weekday)) {
+        // กระโดดไปวันทำงานถัดไป 09:00 (หรือ workStartMinutes)
+        cand = _jumpToNextWorkingDayStart(cand, s);
+        continue;
+      }
+
+
+      final m = cand.hour * 60 + cand.minute;
+      if (m < s.workStartMinutes) {
+        cand = cand.copyWith(hour: s.workStartMinutes ~/ 60, minute: s.workStartMinutes % 60, second: 0, millisecond: 0);
+      } else if (m >= s.workEndMinutes) {
+        // ข้ามไปวันทำงานถัดไปตอนเริ่มงาน
+        cand = _jumpToNextWorkingDayStart(cand.add(const Duration(days: 1)), s);
+        continue;
+      }
+
+
+      // ตัดช่วงพัก (breakPeriods เก็บเป็น Map)
+      final breaks = s.breakPeriods;
+      final insideBreak = breaks.any((bp) {
+        final days = (bp['enabledDays'] as List).cast<int>();
+        final start = bp['startMinutes'] as int;
+        final end   = bp['endMinutes'] as int;
+        return days.contains(weekday) && _inRange(m, start, end);
+      });
+
+
+      if (insideBreak) {
+        // กระโดดไปสิ้นสุดช่วงพักที่ชนอยู่
+        final endMinute = _nearestBreakEndMinute(weekday, m, breaks);
+        cand = cand.copyWith(hour: endMinute ~/ 60, minute: endMinute % 60, second: 0, millisecond: 0);
+        continue;
+      }
+
+
+      // cand ตอนนี้ valid แล้ว
+      return cand;
+    }
+  }
+
+
+  DateTime _jumpToNextWorkingDayStart(DateTime from, UserSettings s) {
+    var d = from;
+    for (int i=0; i<8; i++) {
+      if (s.workingDays.contains(d.weekday)) {
+        return d.copyWith(
+          hour: s.workStartMinutes ~/ 60,
+          minute: s.workStartMinutes % 60,
+          second: 0,
+          millisecond: 0,
+        );
+      }
+      d = d.add(const Duration(days: 1));
+    }
+    return from; // fallback
+  }
+
+
+  bool _inRange(int minuteOfDay, int start, int end) => start <= minuteOfDay && minuteOfDay < end;
+
+
+  int _nearestBreakEndMinute(int weekday, int minuteOfDay, List<Map<String,dynamic>> breaks) {
+    final ends = <int>[];
+    for (final bp in breaks) {
+      final days = (bp['enabledDays'] as List).cast<int>();
+      if (!days.contains(weekday)) continue;
+      final start = bp['startMinutes'] as int;
+      final end   = bp['endMinutes'] as int;
+      if (start <= minuteOfDay && minuteOfDay < end) ends.add(end);
+    }
+    ends.sort();
+    return ends.isNotEmpty ? ends.first : minuteOfDay;
+  }
+
+
+  // เรียกเมื่อผู้ใช้แก้ settings → ยกเลิกทั้งหมดแล้วตั้งใหม่
+  Future<void> onSettingsChanged() async {
+    final s = Get.find<SettingsController>().settings.value;
+    await NotificationService.cancelAll();
+    final next = calculateNextNotificationTime();
+    await NotificationService.scheduleAt(next, id: 1001, title: 'ถึงเวลายืดเหยียดแล้ว', body: _buildBodyFrom(s));
+    await DatabaseService.saveSettings(s..lastNotificationTime = next);
+  }
+
+
+  String _buildBodyFrom(UserSettings s) => 'ดูแลจุดที่คุณเลือกไว้ให้ดีนะ 😊';
+}
+
+
+Scheduling Integration (FLN 19.x + exactAllowWhileIdle)
+class NotificationService {
+  static final _plugin = FlutterLocalNotificationsPlugin();
+
+
+  static Future<void> initialize() async {
+    const init = InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      iOS: DarwinInitializationSettings(),
+    );
+    await _plugin.initialize(init, onDidReceiveNotificationResponse: _onTap);
+    await _createChannel();
+  }
+
+
+  static Future<void> _createChannel() async {
+    const ch = AndroidNotificationChannel(
+      'office_syndrome_main',
+      'Office Syndrome',
+      description: 'แจ้งเตือนยืดเหยียดระหว่างงาน',
+      importance: Importance.high,
+    );
+    await _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+                 ?.createNotificationChannel(ch);
+  }
+
+
+  static Future<void> scheduleAt(DateTime when, {required int id, required String title, String? body}) async {
+    await _plugin.zonedSchedule(
+      id, title, body,
+      tz.TZDateTime.from(when, tz.local),
+      const NotificationDetails(
+        android: AndroidNotificationDetails('office_syndrome_main','Office Syndrome', importance: Importance.high, priority: Priority.high),
+      ),
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle, // ✅ ไม่ต้องขอ SCHEDULE_EXACT_ALARM
+      uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+      matchDateTimeComponents: null,
+    );
+  }
+
+
+  static Future<void> cancelAll() => _plugin.cancelAll();
+  static void _onTap(NotificationResponse r) { /* เปิด flow ทำท่า */ }
+}
+
+
+Background (WorkManager; ลงทะเบียนครั้งเดียว + reboot-safe)
+class BackgroundScheduler {
+  static bool _registered = false;
+
+
+  static Future<void> ensureRegistered() async {
+    if (_registered) return;
+    _registered = true;
+
+
+    await Workmanager().initialize(_callbackDispatcher, isInDebugMode: false);
+    await Workmanager().registerPeriodicTask(
+      'office_syndrome_tick', 'tick',
+      frequency: const Duration(hours: 1),
+      existingWorkPolicy: ExistingWorkPolicy.keep,
+      constraints: Constraints(networkType: NetworkType.not_required),
+    );
+  }
+
+
+  static void _callbackDispatcher() {
+    Workmanager().executeTask((task, input) async {
+      // โหลด settings → สร้างเวลาถัดไปหากไม่มีนัด → schedule
+      final s = await DatabaseService.loadSettings();
+      if (s.notificationEnabled == true) {
+        // ... คำนวณ next ตาม controller ข้างบน (เวอร์ชันเฉพาะ background)
+      }
+      return Future.value(true);
+    });
+  }
+}
+
+
+________________
+
+
+3) Break Time Management ⭐ (ปรับ)
+Flexible Break Periods (เก็บเป็น Map + Validation ไม่ทับกัน)
+class BreakTimeService {
+  static Future<void> addBreakPeriod(BreakPeriod bp) async {
+    final s = await DatabaseService.loadSettings();
+
+
+    // 1) แปลงเป็น Map เพื่อเก็บใน Hive
+    final map = bp.toMap();
+
+
+    // 2) Validation: ห้ามซ้อนเวลาในวันเดียวกัน
+    if (_hasConflict(map, s.breakPeriods)) {
+      throw Exception('ช่วงเวลาซ้อนทับกับช่วงพักที่มีอยู่');
+    }
+
+
+    // 3) บันทึก + รีคอนฟิกแจ้งเตือน
+    s.breakPeriods.add(map);
+    await DatabaseService.saveSettings(s);
+    await Get.find<NotificationController>().onSettingsChanged();
+  }
+
+
+  static bool _hasConflict(Map<String, dynamic> cand, List<Map<String, dynamic>> existing) {
+    final candDays = (cand['enabledDays'] as List).cast<int>();
+    final cs = cand['startMinutes'] as int, ce = cand['endMinutes'] as int;
+
+
+    for (final e in existing) {
+      final ed = (e['enabledDays'] as List).cast<int>();
+      final es = e['startMinutes'] as int, ee = e['endMinutes'] as int;
+
+
+      // ถ้ามีวันตรงกัน และช่วงเวลาเหลื่อมกัน ถือว่าทับ
+      final dayOverlap = candDays.any(ed.contains);
+      final timeOverlap = (cs < ee) && (es < ce);
+      if (dayOverlap && timeOverlap) return true;
+    }
+    return false;
+  }
+
+
+  static bool isBreakTimeOptional() => true;
+}
+
+
+________________
+
+
+4) 💪 Exercise Database & Content (คงเดิม แต่เข้ารหัส/ออฟไลน์)
+Mapping 8 จุด → 19 ท่า
+                                                                     * คอ (T1–T2)
+
+                                                                     * บ่า/ไหล่ (T3–T5)
+
+                                                                     * หลังบน (T6–T8)
+
+                                                                     * หลังล่าง (T9–T10)
+
+                                                                     * แขน/ศอก (T11–T12)
+
+                                                                     * ข้อมือ/มือ/นิ้ว (T13–T15)
+
+                                                                     * ขา (T16–T17)
+
+                                                                     * เท้า (T18–T19)
+
+เก็บเป็น static data ในแอป (local-only), ไม่ต้องใช้อินเทอร์เน็ต
+class RandomService {
+  final _rng = Random();
+
+
+  int selectRandomPainPoint(List<int> painPoints) {
+    // เลือก 1 จุดจากที่ผู้ใช้เลือก (1–3 จุด)
+    return painPoints[_rng.nextInt(painPoints.length)];
+  }
+
+
+  List<int> selectRandomTreatments(int painPointId, int count) {
+    final list = TreatmentsData.getByPainPoint(painPointId).toList();
+    list.shuffle(_rng);
+    return list.take(count).toList(); // ปกติ = 2 ท่า ไม่ซ้ำ
+  }
+}
+
+
+________________
+
+
+Edge Cases & กติกาเพิ่มเติม (ใหม่)
+                                                                        * Time math ใช้ “นาทีตั้งแต่ 00:00” + ข้ามวันอย่างถูกต้อง (หาก candidate เลย workEndMinutes ให้กระโดดไปวันทำงานถัดไปทันที)
+
+                                                                        * Timezone ใช้ timezone ตั้ง Asia/Bangkok สำหรับ zonedSchedule
+
+                                                                        * Reboot-safe: มี RECEIVE_BOOT_COMPLETED + WorkManager ช่วยตั้งงานใหม่หลังบูต
+
+                                                                        * Exact alarm: ใช้ AndroidScheduleMode.exactAllowWhileIdle ⇒ ไม่ต้อง SCHEDULE_EXACT_ALARM
+
+                                                                        * Snooze: จำกัดตาม maxSnoozeCount ต่อ session (ค่าเริ่ม 3)
+
+                                                                        * Performance: อัลกอริทึม _findNextValidTime “กระโดด boundary” เพื่อลด O(นาที) เป็น O(ช่วง)
+
+
+________________
+
+
+🎨 User Interface & Experience
+
+Design System
+                                                                           * Design Language: Material Design 3 (M3)
+
+                                                                           * Color Scheme (Light)
+
+                                                                              * Primary: #2196F3 (Blue)
+
+                                                                              * Secondary: #FF9800 (Orange)
+
+                                                                              * Background: #FAFAFA (Light Gray)
+
+                                                                              * Surface: ขาว (#FFFFFF), On-Primary/On-Secondary ใช้โทนเข้ม (ดำ/เทาเข้ม)
+
+                                                                                 * Typography: Roboto + Noto Sans Thai (ฝังฟอนต์ไว้ในแอปผ่าน pubspec.yaml เพื่อใช้ออฟไลน์ 100%)
+
+                                                                                 * Accessibility: ปฏิบัติตาม WCAG 2.1 AA
+
+                                                                                    * ขนาดสัมผัส ≥ 48×48dp
+
+                                                                                    * รองรับ Text Scale (1.0–1.3 อย่างน้อย)
+
+                                                                                    * Contrast Ratio ≥ 4.5:1 สำหรับตัวอักษรขนาดปกติ
+
+                                                                                    * ใช้ Semantics / tooltip สำหรับไอคอนสำคัญ
+
+                                                                                       * Components & Style (แนะนำ):
+
+                                                                                          * ปุ่ม: Filled / Tonal / Outlined ตามความสำคัญ
+
+                                                                                          * Card: มุมโค้ง 16–20dp, Elevation ตาม M3
+
+                                                                                          * ชิปเลือกจุดปวด: Filter/Choice Chips (รองรับสถานะ Selected/Disabled/Pressed)
+
+                                                                                          * กราฟ: fl_chart 1.1.0 (ไม่ใช้สีระบุเองถ้าไม่ได้ต้องการ), เส้น/แท่งเรียบง่าย อ่านค่าชัดเจน
+
+________________
+
+
+Screen Flows & Layouts
+1) Home Page (Real-time Dashboard) ⭐ ปรับปรุงใหม่
+┌─────── 🏠 Office Syndrome Helper ───────┐
+│                                         │
+│  📍 จุดที่ดูแลอยู่                         │
+│  🔵 คอ  🟠 บ่าและไหล่                     │
+│  (แสดงตามที่ผู้ใช้เลือก 1–3 จุด)           │
+│                                         │
+│  ⏰ สถานะการแจ้งเตือน                      │
+│  🟢 เปิดใช้งาน - พร้อมดูแลคุณ              │
+│  แจ้งเตือนถัดไปใน 45:32:18                │
+│  ████████████████░░░░ 80%                 │
+│                                         │
+│  🧪 [ทดสอบ]  📊 [สถิติ]  ⚙️ [ตั้งค่า]      │
+│                                         │
+│  📈 สถิติวันนี้                            │
+│  แจ้งเตือน: 6 ครั้ง | ทำเสร็จ: 4 ครั้ง     │
+│  อัตราสำเร็จ: 67%                         │
+└─────────────────────────────────────────┘
+
+Features
+                                                                                             * ข้อความกำลังใจ “พร้อมดูแลคุณ” (โทนอบอุ่น/เป็นมิตร)
+
+                                                                                             * Live countdown อัปเดตทุกวินาที (หยุด Timer เมื่อหน้าไม่ active เพื่อประหยัดพลังงาน)
+
+                                                                                             * แสดง “จุดที่ดูแล” ตามที่ผู้ใช้เลือก 1–3 จุด
+
+                                                                                             * Quick actions: ทดสอบแจ้งเตือน, สถิติ, ตั้งค่า
+
+                                                                                             * สถิติวันนี้: แจ้งเตือน/ทำเสร็จ/อัตราสำเร็จแบบย่อ
+
+Acceptance Criteria
+                                                                                                * Countdown เที่ยงตรง (±1s) และหยุดเมื่อออกจากหน้า
+
+                                                                                                * เปลี่ยนการตั้งค่า (เช่น เปิด/ปิดแจ้งเตือน) แล้ว UI สถานะอัปเดตทันที
+
+                                                                                                * สถิติวันนี้อัปเดตหลังจบ session โดยไม่ต้องรีสตาร์ทแอป
+
+2) Todo Page (Exercise Execution)
+┌─────────────────────────────────────────┐
+│ 🎯 ถึงเวลาดูแล: บ่าและไหล่               │
+├─────────────────────────────────────────┤
+│                                         │
+│ 📋 ท่าที่ 1/2                            │
+│ 💪 ยกไหล่ทั้งสองขึ้นให้สูงสุด             │
+│    แล้วปล่อยลง ทำ 10 ครั้ง                │
+│ ⏱️ 30 วินาที                            │
+│ ☑️ ทำเสร็จแล้ว                          │
+│                                         │
+│ 📋 ท่าที่ 2/2                            │
+│ 💪 หมุนไหล่ไปข้างหน้า 10 รอบ             │
+│    แล้วย้อนกลับ                          │
+│ ⏱️ 40 วินาที                            │
+│ ☐ ทำเสร็จแล้ว                          │
+│                                         │
+│ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│ [เสร็จแล้ว]   [เลื่อน 15 นาที]   [ข้าม]   │
+└─────────────────────────────────────────┘
+
+
+Features
+                                                                                                   * แสดงชื่อจุดปวดที่สุ่มได้ + รายการท่า 2 ท่า (ไม่ซ้ำกันในรอบเดียว)
+
+                                                                                                   * ทำเครื่องหมายสำเร็จรายท่า และ บันทึกเวลารวม ของ session
+
+                                                                                                   * ปุ่ม action: เสร็จแล้ว, เลื่อน 15 นาที, ข้าม
+
+Acceptance Criteria
+                                                                                                      * Mark รายท่าแล้ว progress ของ session อัปเดต
+
+                                                                                                      * กด “เลื่อน 15 นาที” → สร้าง schedule ใหม่ทันที (ยึดข้อจำกัด maxSnoozeCount)
+
+                                                                                                      * กด “เสร็จแล้ว” → บันทึก completed, ปิดรอบ, อัปเดตสถิติวันนี้ & Next-time
+3) Settings Page (Configuration) ⭐ ปรับปรุงใหม่
+
+┌─────────────────────────────────────────┐
+│ ⚙️ ตั้งค่า                               │
+├─────────────────────────────────────────┤
+│ 🔔 การแจ้งเตือน                           │
+│ ├─ เปิด/ปิด การแจ้งเตือน [🟢]             │
+│ ├─ ทุกกี่นาที [30▼45▼60▼90▼120]         │
+│ ├─ เวลาเริ่ม–สิ้นสุด [09:00–17:00]       │
+│ │                                         │
+│ ├─ วันที่แจ้งเตือน: 📅                    │
+│ │  [✅] จันทร์ [✅] อังคาร [✅] พุธ        │
+│ │  [✅] พฤหัส [✅] ศุกร์  [  ] เสาร์      │
+│ │  [  ] อาทิตย์                          │
+│ │                                         │
+│ ├─ ช่วงเวลาพัก (ไม่บังคับ): [+ เพิ่ม] ☕   │
+│ │  💡 ไม่มีช่วงพัก = แจ้งเตือนต่อเนื่อง    │
+│ │  • พักกลางวัน: 12:00–13:00 [❌]         │
+│ │  • ประชุมทีม: 10:00–10:30 (จันทร์) [❌]  │
+│ │                                         │
+│ ├─ เสียง [🟢]  การสั่น [🟢]               │
+│ └─ การเลื่อน (สูงสุด 3 ครั้ง)             │
+│                                         │
+│ 🎯 จุดที่ปวด                               │
+│ └─ แก้ไขการเลือก (1–3 จุด) [>]            │
+│                                         │
+│ 📱 เกี่ยวกับแอป                            │
+│ ├─ เวอร์ชัน 1.0.0                          │
+│ └─ รีเซ็ตข้อมูลทั้งหมด                      │
+└─────────────────────────────────────────┘
+
+
+ปรับปรุง
+                                                                                                         * วันทำงาน: รองรับ 7 วันเต็ม (รวมเสาร์อาทิตย์)
+
+                                                                                                         * ช่วงพัก: ไม่บังคับ (0 ช่วงได้) เพิ่มได้หลายช่วง/หลายวัน
+
+                                                                                                         * จุดที่ปวด: 1–3 จุด (ขั้นต่ำ 1)
+
+Acceptance Criteria
+                                                                                                            * เปลี่ยนค่าใด ๆ → เรียก reconfigure (cancel + schedule ใหม่) ภายใน 1 วินาที
+
+                                                                                                            * Validation:
+
+                                                                                                               * workStart < workEnd
+
+                                                                                                               * interval ∈ {30,45,60,90,120}
+
+                                                                                                               * BreakPeriods ไม่ซ้อนเวลาในวันเดียวกัน
+
+                                                                                                                  * รองรับการกลับจากหน้า Permission ของระบบ: UI sync กับสถานะจริง
+
+4) Statistics Page (Data Visualization) ⭐ ปรับปรุงใหม่
+┌─────────────────────────────────────────┐
+│ 📊 สถิติการใช้งาน                        │
+├─────────────────────────────────────────┤
+│ 📅 วันนี้ (3 ก.ย. 2567)                  │
+│ ├─ แจ้งเตือน: 8 ครั้ง                     │
+│ ├─ ทำเสร็จ: 6 ครั้ง (75%)                 │
+│ ├─ เลื่อน: 1 ครั้ง                        │
+│ ├─ ข้าม: 1 ครั้ง                         │
+│ └─ เวลาเฉลี่ยต่อครั้ง: 2.5 นาที            │
+│                                         │
+│ 📈 สัปดาห์นี้ (26 ส.ค. – 1 ก.ย.)         │
+│ [กราฟแสดงความสำเร็จรายวัน]                 │
+│                                         │
+│ 🎯 จุดที่ดูแลบ่อยที่สุด                    │
+│ • แสดงตามจุดที่ผู้ใช้เลือก (1–3 จุด)        │
+│                                         │
+│ 🏆 ความสำเร็จต่อเนื่อง                    │
+│ ปัจจุบัน: 3 วัน | สูงสุด: 12 วัน           │
+│                                         │
+│ 📊 [ดูกราฟ]   [บันทึกเป็นรูป] 📸           │
+└─────────────────────────────────────────┘
+Features
+                                                                                                                     * ช่วงสรุป: วันนี้ / 7 / 30 / 90 วัน / เดือนนี้ / เดือนก่อน
+
+                                                                                                                     * กราฟ (fl_chart 1.1.0): ความสำเร็จรายวัน, อัตราสำเร็จ, เวลาเฉลี่ย/ครั้ง
+
+                                                                                                                     * Export PNG (ผ่าน gal): มี Privacy Mode (ซ่อนข้อความ/ชื่อ), ขนาดไฟล์เป้าหมาย ≤ ~250KB
+
+Acceptance Criteria
+                                                                                                                        * เปลี่ยนช่วงสรุป → รอ < 50ms (อุปกรณ์ทั่วไป)
+
+                                                                                                                        * PNG บันทึกลงแกลเลอรีสำเร็จทุกครั้ง; แสดง Toast/ SnackBar บอกตำแหน่งไฟล์
+
+                                                                                                                        * กราฟอ่านง่าย, ตัวเลข/แกนไม่ทับกันใน Text Scale 1.3×
+Interaction & State (แนวทางพัฒนา)
+                                                                                                                           * ใช้ GetX + Obx เฉพาะจุดที่เปลี่ยน เพื่อลด rebuild
+
+                                                                                                                           * Countdown ใช้ Timer.periodic(const Duration(seconds: 1)) และ ยกเลิกใน onClose()
+
+                                                                                                                           * แผงสถิติวันนี้/กราฟ ใช้ คำนวณแบบ O(n) เฉพาะช่วงที่ร้องขอ + cache 5 วินาที
+
+                                                                                                                           * ปุ่ม “ทดสอบ” บน Home → เรียก NotificationService.showNow(...) หรือ schedule ใกล้ ๆ
+Empty/Error States
+                                                                                                                              * ยังไม่เลือกจุดปวด: การ์ดเตือน + ปุ่มไปหน้า “แก้ไขจุดที่ปวด”
+
+                                                                                                                              * ปิดการแจ้งเตือน: แถบแจ้งเตือนด้านบน (non-blocking) + ปุ่มเปิดสิทธิ์/ระบบ
+
+                                                                                                                              * ไม่มีสถิติ: แสดงภาพ/ข้อความชวนเริ่มต้น (tone เป็นมิตร)
+
+________________
+
+
+Performance Budgets
+                                                                                                                                 * เปิดแอปสู่ Home (warm start) < 300ms บนเครื่องทั่วไป
+
+                                                                                                                                 * สลับแท็บ/หน้าหลัก < 120ms
+
+                                                                                                                                 * สรุป 30/90 วัน < 50ms (หลังมี cache)
+
+                                                                                                                                 * ไม่มี jank ต่อเนื่องจากงานหนักใน build()
+
+________________
+
+
+File Structure (เฉพาะส่วน UI)
+lib/
+  pages/
+    home/home_page.dart            # Dashboard + countdown
+    todo/todo_page.dart            # ทำท่า/ปุ่ม action
+    settings/settings_page.dart    # Forms + validation + break list
+    statistics/statistics_page.dart# กราฟ + ช่วงสรุป + export
+  app/theme/
+    app_theme.dart                 # M3 theme + color/typography
+  app/widgets/
+    chips/pain_point_chip.dart
+    cards/stat_card.dart
+    graphs/weekly_success_chart.dart
+    dialogs/add_break_dialog.dart
+
+
+________________
+
+
+Design Tokens (ย่อ)
+                                                                                                                                    * Radius: 16–20dp บนการ์ด/ปุ่มหลัก, 8dp สำหรับชิป/อินพุต
+
+                                                                                                                                    * Spacing: 8/12/16/24dp (ฐาน 8dp)
+
+                                                                                                                                    * Icon: 20–24dp ในชิป/ปุ่ม, 24–32dp ในการ์ดหัวข้อ
+
+                                                                                                                                    * Elevation: ตาม M3 (สบายตาในพื้นหลัง #FAFAFA)
+
+________________
+
+
+การแชร์ (ปรับปรุง)
+                                                                                                                                       * ช่องทางแชร์: บันทึกเป็นรูปภาพเท่านั้น (ผ่าน gal) → ผู้ใช้เลือกแชร์เอง
+
+                                                                                                                                       * มี Privacy Mode: ซ่อนข้อความ/ชื่อ/โน้ตส่วนตัวในภาพ export
+
+
+
+
+
+
+
+________________
+
+
+🔧 Technical Implementation Details
+
+
+office_syndrome_helper/
+├─ android/
+│  ├─ app/
+│  │  ├─ src/main/
+│  │  │  ├─ kotlin/com/example/office_syndrome_helper/
+│  │  │  │  └─ MainActivity.kt
+│  │  │  ├─ AndroidManifest.xml
+│  │  │  └─ res/
+│  │  ├─ build.gradle
+│  │  └─ key.properties
+│  └─ build.gradle
+├─ lib/
+│  ├─ main.dart
+│  ├─ app/
+│  │  ├─ routes/                # app_pages.dart, app_routes.dart
+│  │  ├─ bindings/              # setup_binding.dart   (เดิม initial_binding.dart)
+│  │  └─ theme/                 # app_theme.dart, app_colors.dart
+│  ├─ controllers/
+│  │  ├─ home_controller.dart
+│  │  ├─ notification_controller.dart   # ⭐ หัวใจสำคัญ
+│  │  ├─ settings_controller.dart
+│  │  ├─ todo_controller.dart
+│  │  ├─ statistics_controller.dart
+│  │  └─ setup_controller.dart
+│  ├─ models/
+│  │  ├─ user_settings.dart             # + .g.dart
+│  │  ├─ notification_session.dart      # + .g.dart
+│  │  ├─ daily_stats.dart               # + .g.dart
+│  │  ├─ pain_point.dart
+│  │  └─ treatment.dart
+│  ├─ services/
+│  │  ├─ database_service.dart          # ⭐ ใช้ Hive+เข้ารหัส & minutes
+│  │  ├─ notification_service.dart      # ⭐ FLN 19.x + exactAllowWhileIdle
+│  │  ├─ background_scheduler.dart      # ⭐ WorkManager guard (แทน alarm_manager)
+│  │  ├─ permission_service.dart
+│  │  ├─ break_time_service.dart        # เก็บ BreakPeriod เป็น Map + validate
+│  │  ├─ statistics_service.dart
+│  │  ├─ image_export_service.dart      # ⭐ ใช้ gal (แทน ImageGallerySaver)
+│  │  └─ random_service.dart
+│  ├─ pages/
+│  │  ├─ splash/      # splash_page.dart
+│  │  ├─ setup/       # setup_page.dart, pain_point_selection_page.dart
+│  │  ├─ home/        # home_page.dart + widgets/
+│  │  ├─ todo/        # todo_page.dart + widgets/
+│  │  ├─ settings/    # settings_page.dart + widgets/
+│  │  └─ statistics/  # statistics_page.dart + widgets/
+│  ├─ widgets/
+│  │  ├─ common/      # buttons, cards, loading
+│  │  └─ forms/       # time_picker, checkbox_list
+│  ├─ data/
+│  │  ├─ treatments_data.dart           # static (ออฟไลน์)
+│  │  └─ pain_points_data.dart          # static (ออฟไลน์)
+│  └─ utils/
+│     ├─ constants.dart
+│     ├─ date_utils.dart
+│     └─ notification_utils.dart
+└─ test/
+   ├─ unit/
+   ├─ widget/
+   └─ integration/    # notification_flow_test.dart
+
+
+🧠 Core Services Implementation (โค้ดอัปเดต)
+1) DatabaseService — Hive + Encryption + Minutes
+                                                                                                                                          * ใช้ flutter_secure_storage เก็บคีย์เข้ารหัส Hive
+
+                                                                                                                                          * เก็บเวลาเป็น นาทีตั้งแต่ 00:00
+
+                                                                                                                                          * ไม่ลงทะเบียน Adapter ของ BreakPeriod (เพราะเก็บเป็น Map)
+
+                                                                                                                                          * มี util loadOrCreateDefaults() และ saveDailyStats()
+
+// lib/services/database_service.dart
+import 'dart:math';
+import 'dart:typed_data';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:office_syndrome_helper/models/user_settings.dart';
+import 'package:office_syndrome_helper/models/notification_session.dart';
+import 'package:office_syndrome_helper/models/daily_stats.dart';
+
+
+class DatabaseService {
+  static const _settingsBox = 'settings';
+  static const _sessionsBox = 'sessions';
+  static const _dailyBox    = 'daily_stats';
+
+
+  static Box<UserSettings>? _settings;
+  static Box<NotificationSession>? _sessions;
+  static Box<DailyStats>? _daily;
+
+
+  static Future<void> initialize() async {
+    await Hive.initFlutter();
+
+
+    // Register adapters (ไม่มี BreakPeriodAdapter)
+    Hive.registerAdapter(UserSettingsAdapter());
+    Hive.registerAdapter(NotificationSessionAdapter());
+    Hive.registerAdapter(DailyStatsAdapter());
+    Hive.registerAdapter(SessionStatusAdapter()); // enum
+
+
+    // Encryption key (32 bytes) from secure storage
+    final storage = const FlutterSecureStorage();
+    var keyBase64 = await storage.read(key: 'hive_key');
+    Uint8List key;
+    if (keyBase64 == null) {
+      key = _randomBytes(32);
+      await storage.write(key: 'hive_key', value: String.fromCharCodes(key));
+    } else {
+      key = Uint8List.fromList(keyBase64.codeUnits);
+    }
+    final cipher = HiveAesCipher(key);
+
+
+    _settings = await Hive.openBox<UserSettings>(_settingsBox, encryptionCipher: cipher);
+    _sessions = await Hive.openBox<NotificationSession>(_sessionsBox, encryptionCipher: cipher);
+    _daily    = await Hive.openBox<DailyStats>(_dailyBox, encryptionCipher: cipher);
+  }
+
+
+  static Uint8List _randomBytes(int length) {
+    final r = Random.secure(); return Uint8List.fromList(List<int>.generate(length, (_) => r.nextInt(256)));
+  }
+
+
+  // --- CRUD ---
+
+
+  static Future<UserSettings> loadOrCreateDefaults() async {
+    final s = _settings!.get('user_settings');
+    if (s != null) return s;
+
+
+    final def = UserSettings.defaults();   // ใช้ minutes + breakPeriods: List<Map>
+    await _settings!.put('user_settings', def);
+    return def;
+  }
+
+
+  static Future<UserSettings> loadSettings() async {
+    return _settings!.get('user_settings') ?? UserSettings.defaults();
+  }
+
+
+  static Future<void> saveSettings(UserSettings settings) async {
+    await _settings!.put('user_settings', settings);
+  }
+
+
+  static String _dateKey(DateTime d) => '${d.year}-${d.month.toString().padLeft(2,'0')}-${d.day.toString().padLeft(2,'0')}';
+
+
+  static Future<DailyStats?> getDailyStats(DateTime date) async {
+    return _daily!.get(_dateKey(date));
+  }
+
+
+  static Future<void> saveDailyStats(DailyStats s) async {
+    await _daily!.put(_dateKey(s.date), s);
+  }
+
+
+  static Future<List<DailyStats>> getWeeklyStats([DateTime? startDate]) async {
+    final start = DateTime((startDate ?? DateTime.now()).year, (startDate ?? DateTime.now()).month,
+        (startDate ?? DateTime.now()).day).subtract(const Duration(days: 6));
+    final stats = <DailyStats>[];
+    for (var i = 0; i < 7; i++) {
+      final date = start.add(Duration(days: i));
+      final ds = await getDailyStats(date);
+      stats.add(ds ?? DailyStats.empty(date));
+    }
+    return stats;
+  }
+}
+
+
+หมายเหตุ: ใน UserSettings.defaults() ให้สร้างตาม schema v6 (minutes + breakPeriods: List<Map<String,dynamic>>)
+________________
+
+
+2) NotificationService — FLN 19.x + exactAllowWhileIdle
+                                                                                                                                             * ใช้ zonedSchedule + AndroidScheduleMode.exactAllowWhileIdle
+
+                                                                                                                                             * Channel หลัก office_syndrome_main
+
+                                                                                                                                             * showNow() สำหรับปุ่ม “ทดสอบ” บนหน้า Home
+
+// lib/services/notification_service.dart
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/timezone.dart' as tz;
+import 'package:timezone/data/latest_all.dart' as tzdata;
+
+
+class NotificationService {
+  static final _plugin = FlutterLocalNotificationsPlugin();
+
+
+  static Future<void> initialize() async {
+    tzdata.initializeTimeZones();
+    tz.setLocalLocation(tz.getLocation('Asia/Bangkok'));
+
+
+    const init = InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      iOS: DarwinInitializationSettings(),
+    );
+    await _plugin.initialize(init, onDidReceiveNotificationResponse: _onTap);
+
+
+    await _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+      ?.createNotificationChannel(const AndroidNotificationChannel(
+        'office_syndrome_main', 'Office Syndrome',
+        description: 'แจ้งเตือนยืดเหยียดระหว่างงาน', importance: Importance.high,
+      ));
+  }
+
+
+  static Future<void> scheduleAt(DateTime when,
+      {required int id, required String title, String? body, bool playSound = true, bool vibration = true}) async {
+    final details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        'office_syndrome_main', 'Office Syndrome',
+        channelDescription: 'แจ้งเตือนยืดเหยียดระหว่างงาน',
+        importance: Importance.high,
+        priority: Priority.high,
+        playSound: playSound,
+        enableVibration: vibration,
+        category: AndroidNotificationCategory.alarm,
+        visibility: NotificationVisibility.public,
+      ),
+      iOS: const DarwinNotificationDetails(),
+    );
+
+
+    await _plugin.zonedSchedule(
+      id, title, body,
+      tz.TZDateTime.from(when, tz.local),
+      details,
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle, // ✅ ไม่ต้อง SCHEDULE_EXACT_ALARM
+      uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+      matchDateTimeComponents: null,
+    );
+  }
+
+
+  static Future<void> showNow({required int id, required String title, String? body,
+    bool playSound = true, bool vibration = true}) async {
+    final details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        'office_syndrome_main', 'Office Syndrome',
+        channelDescription: 'แจ้งเตือนยืดเหยียดระหว่างงาน',
+        importance: Importance.high,
+        priority: Priority.high,
+        playSound: playSound,
+        enableVibration: vibration,
+      ),
+      iOS: const DarwinNotificationDetails(),
+    );
+    await _plugin.show(id, title, body, details);
+  }
+
+
+  static Future<void> cancelAll() => _plugin.cancelAll();
+
+
+  static void _onTap(NotificationResponse r) {
+    // TODO: เปิดหน้า todo หรือ deep-link ไปยัง flow ทำท่า
+  }
+}
+
+
+________________
+
+
+3) BackgroundScheduler — WorkManager (แทน android_alarm_manager_plus)
+                                                                                                                                                * ลงทะเบียน ครั้งเดียว ด้วย guard
+
+                                                                                                                                                * ใช้ periodic 1 ชม. เพื่อ ensure re-schedule หลังรีบูต/เงื่อนไขอื่น
+
+// lib/services/background_scheduler.dart
+import 'package:workmanager/workmanager.dart';
+import 'package:office_syndrome_helper/services/database_service.dart';
+import 'package:office_syndrome_helper/services/notification_service.dart';
+import 'package:office_syndrome_helper/models/user_settings.dart';
+import 'package:office_syndrome_helper/controllers/notification_controller.dart';
+import 'package:get/get.dart';
+
+
+class BackgroundScheduler {
+  static bool _registered = false;
+
+
+  static Future<void> ensureRegistered() async {
+    if (_registered) return;
+    _registered = true;
+
+
+    await Workmanager().initialize(_dispatcher, isInDebugMode: false);
+    await Workmanager().registerPeriodicTask(
+      'osh_tick', 'tick',
+      existingWorkPolicy: ExistingWorkPolicy.keep,
+      frequency: const Duration(hours: 1),
+      constraints: Constraints(networkType: NetworkType.not_required),
+    );
+  }
+
+
+  static void _dispatcher() {
+    Workmanager().executeTask((task, input) async {
+      final s = await DatabaseService.loadSettings();
+      if (!s.notificationEnabled) return true;
+
+
+      // ถ้าไม่มีนัดถัดไปในระบบ (หรือหลุด) → สร้างนัดใหม่
+      final controller = Get.isRegistered<NotificationController>()
+          ? Get.find<NotificationController>()
+          : NotificationController();
+
+
+      final next = controller.calculateNextNotificationTime();
+      await NotificationService.scheduleAt(
+        next,
+        id: 1001,
+        title: 'ถึงเวลายืดเหยียดแล้ว',
+        playSound: s.soundEnabled,
+        vibration: s.vibrationEnabled,
+      );
+      return true;
+    });
+  }
+}
+
+
+________________
+
+
+4) PermissionService — Runtime เฉพาะ Notifications (Android 13+)
+// lib/services/permission_service.dart
+import 'package:permission_handler/permission_handler.dart';
+import 'package:office_syndrome_helper/services/database_service.dart';
+
+
+class PermissionService {
+  static Future<bool> checkAndRequestNotificationsIfNeeded() async {
+    final s = await DatabaseService.loadSettings();
+    if (!s.hasRequestedPermissions) {
+      final granted = await Permission.notification.request();
+      s.hasRequestedPermissions = true;
+      await DatabaseService.saveSettings(s);
+      return granted.isGranted || granted.isLimited;
+    } else {
+      final st = await Permission.notification.status;
+      return st.isGranted || st.isLimited;
+    }
+  }
+}
+// Manifest ยังคง: POST_NOTIFICATIONS, RECEIVE_BOOT_COMPLETED, VIBRATE, WAKE_LOCK
+
+
+________________
+
+
+5) BreakTimeService — BreakPeriod เป็น Map + ตรวจซ้อนเวลา
+// lib/services/break_time_service.dart
+import 'package:get/get.dart';
+import 'package:office_syndrome_helper/services/database_service.dart';
+import 'package:office_syndrome_helper/controllers/notification_controller.dart';
+
+
+class BreakTimeService {
+  static Future<void> addBreakPeriod({
+    required List<int> enabledDays, // 1..7
+    required int startMinutes,      // 0..1439
+    required int endMinutes,        // 0..1439
+    String? name,
+  }) async {
+    final s = await DatabaseService.loadSettings();
+    final cand = {
+      'enabledDays': enabledDays,
+      'startMinutes': startMinutes,
+      'endMinutes': endMinutes,
+      'name': name,
+    };
+
+
+    if (_conflict(cand, s.breakPeriods)) {
+      throw Exception('ช่วงเวลาซ้อนทับกับช่วงพักที่มีอยู่');
+    }
+
+
+    s.breakPeriods.add(cand);
+    await DatabaseService.saveSettings(s);
+    await Get.find<NotificationController>().onSettingsChanged();
+  }
+
+
+  static bool _conflict(Map<String, dynamic> cand, List<Map<String, dynamic>> existing) {
+    final days = (cand['enabledDays'] as List).cast<int>();
+    final cs = cand['startMinutes'] as int;
+    final ce = cand['endMinutes'] as int;
+    for (final e in existing) {
+      final ed = (e['enabledDays'] as List).cast<int>();
+      final es = e['startMinutes'] as int;
+      final ee = e['endMinutes'] as int;
+      if (days.any(ed.contains) && (cs < ee) && (es < ce)) return true;
+    }
+    return false;
+  }
+}
+
+
+________________
+
+
+6) ImageExportService — ใช้ gal (แทน ImageGallerySaver)
+                                                                                                                                                   * บันทึกภาพลงแกลเลอรีโดยตรงด้วย bytes (ไม่ต้อง WRITE_EXTERNAL_STORAGE)
+
+                                                                                                                                                   * คืนค่า path ชั่วคราวสำหรับ preview + flag ว่าบันทึกลงแกลเลอรีแล้ว
+
+// lib/services/image_export_service.dart
+import 'dart:ui' as ui;
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:gal/gal.dart';
+
+
+class ImageExportService {
+  static Future<Map<String, dynamic>> generateStatsImage(Map<String, dynamic> statsData) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    const size = Size(800, 1200);
+
+
+    // BG
+    final bgPaint = Paint()..color = Colors.white;
+    canvas.drawRect(const Rect.fromLTWH(0, 0, size.width, size.height), bgPaint);
+
+
+    // Title
+    final titlePainter = _text('🏆 Office Syndrome Helper 🏆',
+        const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.black87));
+    titlePainter.paint(canvas, const Offset(32, 48));
+
+
+    // Body
+    final lines = <String>[
+      'สรุปสัปดาห์นี้',
+      '',
+      '✅ ${statsData['completed']}/${statsData['total']} ครั้ง (${statsData['percentage']}%)',
+      '🔥 ต่อเนื่อง ${statsData['streak']} วัน',
+      '⏱️ ใช้เวลา ${statsData['duration']} นาที',
+      '',
+      '💪 จุดที่โฟกัส: ${statsData['painPoints']}',
+      '',
+      '#OfficeSyndromeHelper',
+    ];
+    double y = 120;
+    for (final l in lines) {
+      final p = _text(l, const TextStyle(fontSize: 24, color: Colors.black87));
+      p.paint(canvas, Offset(32, y));
+      y += 40;
+    }
+
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(size.width.toInt(), size.height.toInt());
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    final bytes = byteData!.buffer.asUint8List();
+
+
+    // Temp preview file
+    final dir = await getTemporaryDirectory();
+    final name = 'osh_stats_${DateTime.now().millisecondsSinceEpoch}.png';
+    final file = File('${dir.path}/$name');
+    await file.writeAsBytes(bytes, flush: true);
+
+
+    // Save to gallery
+    final ok = await Gal.putImageBytes(bytes, album: 'Office Syndrome Helper', name: name);
+
+
+    return {'previewPath': file.path, 'savedToGallery': ok == true};
+  }
+
+
+  static TextPainter _text(String s, TextStyle style) {
+    final tp = TextPainter(text: TextSpan(text: s, style: style), textDirection: TextDirection.ltr);
+    tp.layout(maxWidth: 736);
+    return tp;
+  }
+}
+
+
+________________
+
+
+7) StatisticsService — บันทึก/สรุป/เตรียมข้อมูลแชร์
+// lib/services/statistics_service.dart
+import 'package:office_syndrome_helper/services/database_service.dart';
+import 'package:office_syndrome_helper/models/notification_session.dart';
+import 'package:office_syndrome_helper/models/daily_stats.dart';
+import 'package:office_syndrome_helper/services/date_utils.dart'; // สมมุติ: มี normalizeToMidnight()
+
+
+class StatisticsService {
+  static Future<void> recordSessionCompletion(NotificationSession session) async {
+    final today = DateTime.now(); // หรือ normalize local midnight
+    var daily = await DatabaseService.getDailyStats(today) ?? DailyStats.empty(today);
+
+
+    daily.totalNotifications++;
+    switch (session.status) {
+      case SessionStatus.completed:
+        daily.completedSessions++;
+        daily.totalDurationSeconds += session.durationSeconds;
+        break;
+      case SessionStatus.snoozed:
+        daily.snoozedSessions++;
+        break;
+      case SessionStatus.skipped:
+        daily.skippedSessions++;
+        break;
+      default:
+        break;
+    }
+
+
+    final cur = daily.painPointFrequency[session.painPointId] ?? 0;
+    daily.painPointFrequency[session.painPointId] = cur + 1;
+
+
+    await DatabaseService.saveDailyStats(daily);
+  }
+
+
+  static Future<Map<String, dynamic>> getWeeklySummary([DateTime? weekStart]) async {
+    final stats = await DatabaseService.getWeeklyStats(weekStart);
+    final totalNotifications = stats.fold(0, (a, s) => a + s.totalNotifications);
+    final totalCompleted     = stats.fold(0, (a, s) => a + s.completedSessions);
+    final avgSuccess = stats.isNotEmpty
+        ? stats.map((s) => s.successRate).reduce((a, b) => a + b) / stats.length
+        : 0.0;
+    final totalDurationMin = (stats.fold(0, (a, s) => a + s.totalDurationSeconds) / 60).round();
+
+
+    return {
+      'totalNotifications': totalNotifications,
+      'totalCompleted': totalCompleted,
+      'averageSuccessRate': avgSuccess,
+      'totalDurationMin': totalDurationMin,
+      'dailyStats': stats,
+    };
+  }
+
+
+  // ⭐ สร้างข้อมูลแชร์สำหรับ ImageExportService
+  static Future<Map<String, dynamic>> generateShareData() async {
+    final weekly = await getWeeklySummary();
+    final s = await DatabaseService.loadSettings();
+    final painPointNames = s.selectedPainPointIds.map((id) => PainPointsData.getName(id)).join(' | ');
+    return {
+      'completed': weekly['totalCompleted'],
+      'total': weekly['totalNotifications'],
+      'percentage': (weekly['averageSuccessRate'] as double).round(),
+      'streak': await _getCurrentStreak(),            // TODO: คำนวณจาก daily_stats ต่อเนื่อง
+      'duration': weekly['totalDurationMin'],
+      'painPoints': painPointNames,
+    };
+  }
+
+
+  static Future<int> _getCurrentStreak() async {
+    // TODO: นับถอยหลังจากวันนี้ไปเรื่อย ๆ จนเจอวัน successRate == 0
+    return 0;
+  }
+}
+
+
+________________
+
+
+📱 Android Configuration
+AndroidManifest.xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+
+    <!-- Permissions (อัปเดตแล้ว) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- ถ้าไม่ได้รัน foreground service อื่น ๆ สามารถลบบรรทัดนี้ได้ -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+
+    <application
+        android:name="${applicationName}"
+        android:label="Office Syndrome Helper"
+        android:icon="@mipmap/ic_launcher">
+
+
+        <!-- Main Activity -->
+        <!-- แนะนำระบุชื่อเต็ม (fully-qualified) ให้ตรงกับ package/namespace -->
+        <activity
+            android:name="com.example.office_syndrome_helper.MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:theme="@style/LaunchTheme">
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+
+        <!-- ❌ ลบ BootReceiver ออก (ใช้ WorkManager แทน) -->
+
+
+        <!-- ช่องทางแจ้งเตือนจะถูกสร้างผ่านโค้ด (FLN 19.x) -->
+    </application>
+</manifest>
+
+
+
+
+________________
+
+
+🧪 Testing Strategy
+🧪 Testing Strategy (อัปเดต v6 • 2025)
+สิ่งที่เปลี่ยนหลัก ๆ
+                                                                                                                                                      * ทดสอบ WorkManager (single registration, reboot-safe) แทน AlarmManager
+
+                                                                                                                                                      * ทดสอบ FLN 19.x (exactAllowWhileIdle) และ runtime permission ของ POST_NOTIFICATIONS (Android 13+)
+
+                                                                                                                                                      * ทดสอบ BreakPeriod เก็บเป็น Map + validation ไม่ซ้อนเวลา
+
+                                                                                                                                                      * ทดสอบ Image Export ด้วย gal (ไม่ใช้ ImageGallerySaver)
+
+Test Coverage Requirements
+                                                                                                                                                         * Unit Tests: ≥ 80% สำหรับ business logic (scheduler, validation, stats)
+
+                                                                                                                                                         * Widget Tests: ครอบคลุม main flows (setup → home → todo → settings → stats)
+
+                                                                                                                                                         * Integration Tests: End-to-end notification flow (schedule → receive → complete/snooze/skip)
+
+                                                                                                                                                         * Manual Tests: อุปกรณ์/เอ็มมูเลเตอร์ Android 8.0 / 10 / 12 / 14 (API 26 / 29 / 31 / 34–35)
+
+________________
+
+
+Critical Test Cases ⭐ (อัปเดตรายการ + เกณฑ์ผ่าน)
+1) Pain Point Selection Tests
+testWidgets('Pain point selection allows 1–3 selections', (tester) async {
+  // Arrange: เปิดหน้าตั้งค่าเลือกจุดปวด
+  // Act/Assert:
+  // - เลือก 1 จุด → ปุ่ม Continue เปิดใช้งาน
+  // - เลือก 2 จุด → ยังเปิดใช้งาน
+  // - เลือก 3 จุด → ยังเปิดใช้งาน
+  // - พยายามเลือกจุดที่ 4 → ไม่ให้เพิ่ม, มี toast/ข้อความเตือน
+  // - ยกเลิกเลือกจนเหลือ 0 → ปุ่ม Continue ปิดใช้งาน
+});
+
+
+ผ่านเมื่อ: สถานะปุ่มและข้อความเตือนถูกต้อง, state sync กับ UserSettings.selectedPainPointIds
+________________
+
+
+2) Working Days Management Tests (รองรับ 7 วันเต็ม)
+testWidgets('All 7 days can be selected for notifications', (tester) async {
+  // - เลือกเฉพาะ weekdays
+  // - เลือกเฉพาะ weekends
+  // - เลือกครบ 7 วัน
+  // - ยกเลิกเลือกทั้งหมด → แสดงคำเตือน/ป้องกันการบันทึก
+  // - ตรวจ shouldNotifyAt() ทำงานถูกในวันเสาร์–อาทิตย์
+});
+
+
+ผ่านเมื่อ: shouldNotifyAt() ตัดสินถูกต้องตาม workingDays
+________________
+
+
+3) Flexible Break Time Tests (BreakPeriod เป็น Map)
+testWidgets('Break periods are optional and flexible', (tester) async {
+  // - ไม่มีช่วงพัก → แจ้งเตือนต่อเนื่องตาม interval
+  // - เพิ่มพักกลางวัน 12:00–13:00 → ไม่สร้างนัดซ้อนในช่วงพัก
+  // - พักเฉพาะวันจันทร์ → วันอื่นไม่ถูกบล็อก
+  // - หลายพักในวันเดียวกัน → ระบบป้องกันซ้อน (validate conflict)
+});
+
+
+ผ่านเมื่อ: _findNextValidTime() กระโดดไปหลังเวลาพักได้ถูกต้องและ validate ทับซ้อนทำงาน
+________________
+
+
+4) Image Export Tests ⭐ (ใช้ gal)
+testWidgets('Statistics image export works correctly', (tester) async {
+  // - สร้างภาพจาก sample data (ใช้ ImageExportService.generateStatsImage)
+  // - บันทึกลงแกลเลอรีด้วย gal (mock/stub ได้)
+  // - ภาพเป็น PNG, มีค่า stats ถูกต้อง, รองรับชุดจุดปวดต่าง ๆ
+  // - คืนค่า previewPath และ savedToGallery == true
+});
+
+
+ผ่านเมื่อ: ได้ไฟล์ PNG, บันทึกสำเร็จ (mock gal), ข้อมูลในภาพถูกต้อง
+________________
+
+
+5) Notifications & Scheduling (ใหม่สำหรับ FLN 19.x + WorkManager)
+Unit (Scheduler)
+test('calculateNextNotificationTime respects working hours & breaks', () {
+  // เตรียม settings: minutes, workingDays, breakPeriods(Map)
+  // ตรวจว่าฟังก์ชันกระโดด boundary (ก่อน workStart, หลัง workEnd, ระหว่าง break)
+  // ไม่ไล่เพิ่มทีละนาที (ประสิทธิภาพ)
+});
+
+
+Integration (E2E)
+testWidgets('End-to-end: schedule → receive → complete', (tester) async {
+  // 1) เปิดแอป → initialize() → scheduleAt(...)
+  // 2) จำลองเวลาถึงนัด (fake_async/timezone)
+  // 3) กดแจ้งเตือน → เข้าหน้า todo → ทำเสร็จ → statistics อัปเดต
+  // 4) เปลี่ยน settings → เรียก reconfigure (cancelAll + schedule ใหม่)
+});
+
+
+WorkManager (Single Registration & Reboot-safe)
+test('BackgroundScheduler registers once (guard)', () async {
+  // เรียก ensureRegistered() 2 ครั้ง → ระบบลงทะเบียนครั้งเดียว
+});
+
+
+Manual: รีสตาร์ทเครื่อง/เอมูฯ → งาน background ยังทำงาน (มีนัดถัดไปถูกตั้ง)
+________________
+
+
+เครื่องมือทดสอบ/เทคนิคเสริม
+                                                                                                                                                            * ใช้ fake_async สำหรับ countdown/เวลาถัดไป เพื่อไม่ต้องรอจริง
+
+                                                                                                                                                            * กำหนด timezone → 'Asia/Bangkok' ในชุดทดสอบที่เกี่ยวกับเวลาจริง
+
+                                                                                                                                                            * สำหรับกราฟ (fl_chart 1.1.0): snapshot test วาดกราฟสำเร็จ ไม่มีข้อผิดพลาดจาก vector_math
+
+                                                                                                                                                            * Mock services (NotificationService, ImageExportService, Workmanager) ด้วย interface/DI เพื่อให้ทดสอบง่าย
+
+________________
+
+
+Test Matrix (แนะนำ)
+                                                                                                                                                               * API 26 (Android 8): พื้นฐาน WorkManager/FLN ทำงาน
+
+                                                                                                                                                               * API 29 (Android 10): พฤติกรรมแบตเตอรี่เข้มขึ้นเล็กน้อย
+
+                                                                                                                                                               * API 31 (Android 12): เปลี่ยนระบบ notification behavior (รองรับ)
+
+                                                                                                                                                               * API 34–35 (Android 14/15): ทดสอบ POST_NOTIFICATIONS runtime permission + exactAllowWhileIdle
+
+________________
+
+
+เกณฑ์ผ่านรวม (Definition of Done – Testing)
+                                                                                                                                                                  * Unit coverage (business logic) ≥ 80%
+
+                                                                                                                                                                  * Widget flows ครอบคลุม: Setup → Home → Todo → Settings → Statistics
+
+                                                                                                                                                                  * Integration (E2E) ผ่าน: schedule → receive → complete/snooze/skip → stats อัปเดต
+
+                                                                                                                                                                  * Manual บนอุปกรณ์/เอมูเลเตอร์ตาม matrix ผ่านทั้งหมด
+
+                                                                                                                                                                  * ไม่มี crash / ไม่มี warning สำคัญจาก Gradle/AGP / ไม่มี error จาก vector_math
+
+
+
+
+
+________________
+
+
+🎯 Success Metrics & KPIs
+
+
+
+Metric
+	Target
+	นิยาม/สูตร
+	การเก็บข้อมูล (ออฟไลน์)
+	เกณฑ์ผ่าน (DoD)
+	Reliability
+	≥ 99% notification delivery success rate
+	Delivery SR = (จำนวน session ที่ “ถึงกำหนดและโพสต์แจ้งเตือนสำเร็จ” ÷ จำนวน session ที่ schedule) × 100
+	เมื่อ schedule → สร้าง NotificationSession(status=scheduled, scheduledTime); เมื่อถึงเวลา NotificationService.scheduleAt() โฟกัสบันทึก actualTriggerCandidate=scheduledTime และหลังเวลานั้น 0–2 นาทีให้ probe: 1) ถ้ามี tap/ action → นับ delivered ทันที 2) ถ้าไม่มี interaction ให้ถือว่า delivered ถ้า session ถูก “re-schedule confirm” โดย WorkManager ไม่เข้าทับพัก/นอกเวลางาน (proxy เชิงระบบ)
+	≥ 99% ภายในรอบทดสอบ 7–14 วัน (≥ 300 sessions)
+	Performance (RAM)
+	< 100MB RSS (foreground)
+	ค่า RSS/ PSS ของโปรเซส
+	ทำช่องทาง Platform (Android) เรียก Debug.getPss() ทุก 15 นาทีเมื่อ foreground + log ลง Hive
+	ค่าเฉลี่ย < 100MB และ p95 < 120MB
+	Battery
+	< 2%/วัน
+	สัดส่วนแบตที่แอปใช้ต่อวัน
+	Internal test ใช้ Battery Historian/ADB bugreport + นับ wakeups/alarms ของ WorkManager (1 ชม./ครั้ง), ในโปรดักชัน log duty-cycle (ms ทำงาน/วัน) เป็น proxy
+	เฉลี่ย < 2%/วัน บนอุปกรณ์ทดสอบมาตรฐาน
+	Timing Accuracy
+	±30s
+	`Δt =
+	scheduledTime − firedTime
+	`
+	Stability
+	0 crashes / 1000 sessions
+	Crash Rate/1k sessions
+	ครอบ FlutterError.onError + runZonedGuarded บันทึก crash log (ออฟไลน์) + restart marker
+	0/1000 ในรอบทดสอบ≥1000 sessions
+	Compatibility
+	Android 8.0–14 ทำงานได้
+	ทุกฟีเจอร์หลักทำงาน
+	Test matrix: API 26 / 29 / 31 / 34–35 ผ่าน; ไม่มี crash/warning สำคัญ
+	✅ ผ่านทุกเวอร์ชันใน matrix
+	
+2) User Experience Metrics ⭐ (ปรับปรุงใหม่)
+
+Metric
+	Target
+	นิยาม/สูตร
+	เก็บข้อมูล
+	เกณฑ์ผ่าน
+	Setup Time
+	< 2 นาที
+	เวลาจาก Splash → จบ Setup (บันทึก t_start, t_end)
+	ตีตราเวลาใน SetupController ลง Hive
+	p95 < 120 วินาที
+	Engagement
+	> 75% session completion rate
+	(จำนวน completed ÷ จำนวน totalNotifications) × 100
+	จาก DailyStats
+	ค่าเฉลี่ย 7 วัน > 75%
+	Retention (WAU)
+	> 85% weekly active users
+	ผู้ใช้เปิดแอป/ทำ session ≥ 1 ใน 7 วันล่าสุด
+	บันทึก lastActive ต่อวัน
+	6/7 วันมี activity
+	Satisfaction
+	> 4.2/5.0
+	In-app quick rating (local-only)
+	เก็บผลไว้ใน Hive (ไม่ส่งออก)
+	ค่าเฉลี่ย rolling 30 วัน ≥ 4.2
+	Flexibility
+	≥ 90% users customize
+	มีการแก้ค่าอย่างน้อย 1 รายการ (วันทำงาน/พัก/ช่วงเวลา) ภายในสัปดาห์แรก
+	Event log: setting_changed
+	≥ 90% ภายใน 7 วันแรก
+	3) Business Metrics
+
+Metric
+	Target
+	นิยาม/สูตร
+	เก็บข้อมูล
+	เกณฑ์ผ่าน
+	Adoption
+	95% permission grant
+	อัตราส่วนอนุญาต POST_NOTIFICATIONS
+	ผลลัพธ์ PermissionService ครั้งแรก
+	≥ 95% บนอุปกรณ์ทดสอบ
+	Usage Patterns
+	–
+	การใช้งาน peak ตามวันทำงานที่เลือก
+	จาก DailyStats + time buckets
+	แสดงแพทเทิร์นสอดคล้องวันทำงาน
+	Feature Utilization – Breaks
+	≥ 70%
+	ผู้ใช้เพิ่มช่วงพัก ≥ 1
+	Event break_added
+	≥ 70% ภายใน 14 วัน
+	Feature Utilization – Working Days
+	≥ 60%
+	ผู้ใช้กำหนดวันทำงานนอก จ–ศ
+	Event working_days_customized
+	≥ 60%
+	Feature Utilization – Export
+	≥ 40%
+	ใช้ “บันทึกเป็นรูป” อย่างน้อย 1 ครั้ง
+	Event export_image_success
+	≥ 40% ใน 30 วัน
+	Long-term Retention (D30)
+	≥ 35%
+	ผู้ใช้ที่ยัง active หลัง 30 วัน
+	lastActive ≥ D+30
+	≥ 35%
+	
+หมายเหตุ: แอป ออฟไลน์ ⇒ ตัวเลขเป็น per-device ใช้สำหรับ QA/UX research ภายในเครื่อง (สามารถเพิ่ม “Export Usage Report” แบบ CSV/ภาพ ให้ผู้ใช้ส่งออกเองได้ในอนาคต หากต้องรวมศูนย์)
+
+4) Instrumentation & Data Model (เพิ่มในเอกสารเทคนิค)
+
+Event Log (Hive box: events)
+
+                                                                                                                                                                     * session_scheduled, session_fired, session_completed, session_snoozed, session_skipped
+
+                                                                                                                                                                     * permission_result, setting_changed, break_added, export_image_success, app_open
+
+                                                                                                                                                                     * ฟิลด์มาตรฐาน: ts, type, props (Map) เช่น {interval:60, day:2}, {export:png}
+
+                                                                                                                                                                        * Counters/Derived (ต่อยอดจาก DailyStats)
+
+                                                                                                                                                                           * เพิ่ม taps, missed (ถ้าพ้นหน้าต่าง ±5 นาทีแล้วไม่มี interaction ให้บันทึกเป็น missed เพื่อการวิเคราะห์ UX)
+
+                                                                                                                                                                              * Performance Sampler (ออฟไลน์)
+
+                                                                                                                                                                                 * Memory: Platform channel → Debug.getPss()/15 นาที เมื่อ foreground
+
+                                                                                                                                                                                 * Battery proxy: duty-cycle ของ background งาน (ms/วัน) + จำนวนครั้ง WorkManager ทำงาน
+
+                                                                                                                                                                                 * เก็บค่า p50/p95 ใน performance_daily box
+
+                                                                                                                                                                                    * Privacy
+
+                                                                                                                                                                                       * ไม่มีข้อมูลส่วนบุคคล/เครือข่ายออกนอกเครื่อง
+
+                                                                                                                                                                                       * มี Privacy Mode เมื่อ export สถิติ
+
+________________
+
+
+5) Acceptance Gates (ก่อนปล่อยเวอร์ชัน)
+                                                                                                                                                                                          1. ความถูกต้องเวลา (±30s): ชุดทดสอบ 200+ sessions ครอบคลุมใน/นอกช่วงพัก วันทำงาน/สุดสัปดาห์ → p95 ≤ 30s
+
+                                                                                                                                                                                          2. ความเสถียร (0/1000): รัน stress test 1000 sessions ไม่มี crash (ดู crash log box)
+
+                                                                                                                                                                                          3. แบตเตอรี่ (<2%/วัน): ทดสอบ 3 วัน連 ต่อเนื่อง ภายใต้ interval 60 นาที + ช่วงพัก 1 รายการ + WAKE LOCK ถูกต้อง
+
+                                                                                                                                                                                          4. หน่วยความจำ (<100MB): โปรไฟล์ 30 นาที ฟรอนต์กราวด์ + toggle หน้าจอ UI หลักครบ → avg < 100MB, p95 < 120MB
+
+                                                                                                                                                                                          5. ความเข้ากันได้ (8.0–14): ผ่าน test matrix (API 26/29/31/34–35)
+
+                                                                                                                                                                                          6. UX Metrics (ภายใน): Setup p95 < 2 นาที, Engagement 7 วัน > 75%
+
+________________
+
+
+6) สูตร/ตัวอย่างคำนวณ (โค้ดกึ่งเทียม)
+// Reliability (proxy)
+final delivered = sessions.where((s) =>
+  s.status == SessionStatus.inProgress ||
+  s.status == SessionStatus.completed ||
+  s.status == SessionStatus.snoozed ||
+  s.status == SessionStatus.skipped
+).length;
+final scheduled = sessions.length;
+final deliverySR = scheduled == 0 ? 100.0 : delivered * 100.0 / scheduled;
+
+
+// Accuracy (Δt)
+final deltas = sessions
+  .where((s) => s.actualTime != null)
+  .map((s) => (s.actualTime!.difference(s.scheduledTime)).inSeconds.abs())
+  .toList();
+final p95 = percentile(deltas, 95);
+
+
+// Engagement
+final engagement = totalNotifications == 0
+  ? 0
+  : (completedSessions * 100.0 / totalNotifications);
+
+
+// Flexibility (ภายใน 7 วันแรก)
+final usersCustomized = settingsChangedEvents.any(...); // ต่อผู้ใช้ = 1 เครื่อง
+
+
+________________
+
+
+7) แผงสรุปในแอป (ภาคเสริม — ไม่บังคับ)
+                                                                                                                                                                                             * หน้า Statistics → KPIs (dev-only toggle) แสดง: Delivery SR, Δt p95, RAM avg/p95, Battery proxy/day, Crash/1k, Engagement 7 วัน
+
+                                                                                                                                                                                             * ปุ่ม Export CSV/PNG (ออฟไลน์) สำหรับ QA
+
+
+
+________________
+
+
+🔒 Security & Privacy
+Data Protection
+                                                                                                                                                                                                * Local-Only Storage: แอปทำงานออฟไลน์ 100% — ไม่ส่งข้อมูลออกนอกอุปกรณ์
+
+                                                                                                                                                                                                * No Analytics: ไม่มี 3rd-party analytics/SDK/telemetry ใด ๆ
+
+                                                                                                                                                                                                * Hive Encryption: เข้ารหัสทุกกล่องข้อมูลสำคัญด้วยคีย์ 256-bit จาก flutter_secure_storage
+
+                                                                                                                                                                                                * Permission Minimization: ขอเฉพาะที่จำเป็นจริง (POST_NOTIFICATIONS, RECEIVE_BOOT_COMPLETED, VIBRATE, WAKE_LOCK)
+
+                                                                                                                                                                                                * Image Privacy: รูปที่ export สร้างจาก Canvas (ไม่ฝัง EXIF/metadata/ชื่อผู้ใช้) และบันทึกผ่าน gal ลง MediaStore โดยตรง
+
+แนะนำเพิ่มเติม (แข็งแรงขึ้น แต่ไม่บังคับ):
+                                                                                                                                                                                                   * ปิดระบบแบ็กอัพของแอนดรอยด์: ใส่ android:allowBackup="false" และ/หรือ fullBackupContent ที่ exclude ทั้งหมด
+
+                                                                                                                                                                                                   * Build release ใช้ Dart obfuscation: flutter build apk --release --obfuscate --split-debug-info=build/symbols
+
+________________
+
+
+Security Measures (อัปเดตโค้ดให้ปลอดภัยขึ้น)
+✅ DatabaseService — เปิด Hive แบบเข้ารหัส (Base64 key ใน Secure Storage)
+// lib/services/database_service.dart
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:office_syndrome_helper/models/user_settings.dart';
+import 'package:office_syndrome_helper/models/notification_session.dart';
+import 'package:office_syndrome_helper/models/daily_stats.dart';
+
+
+class DatabaseService {
+  static const _settingsBox = 'settings';
+  static const _sessionsBox = 'sessions';
+  static const _dailyBox    = 'daily_stats';
+
+
+  static Future<void> initialize() async {
+    await Hive.initFlutter();
+
+
+    // Register adapters (เฉพาะที่ต้องใช้; BreakPeriod เก็บเป็น Map จึงไม่ต้องมี adapter)
+    Hive.registerAdapter(UserSettingsAdapter());
+    Hive.registerAdapter(NotificationSessionAdapter());
+    Hive.registerAdapter(DailyStatsAdapter());
+    Hive.registerAdapter(SessionStatusAdapter());
+
+
+    // Generate or retrieve encryption key (256-bit) ที่เก็บใน Secure Storage (Base64)
+    final secure = const FlutterSecureStorage();
+    var b64 = await secure.read(key: 'hive_key');
+    if (b64 == null) {
+      final key = Hive.generateSecureKey();        // 32 bytes
+      b64 = base64UrlEncode(key);
+      await secure.write(key: 'hive_key', value: b64);
+    }
+    final keyBytes = base64Url.decode(b64);
+    final cipher = HiveAesCipher(keyBytes);
+
+
+    // Open encrypted boxes
+    await Hive.openBox<UserSettings>(_settingsBox, encryptionCipher: cipher);
+    await Hive.openBox<NotificationSession>(_sessionsBox, encryptionCipher: cipher);
+    await Hive.openBox<DailyStats>(_dailyBox, encryptionCipher: cipher);
+
+
+    // หมายเหตุ: ถ้ามี box อื่น (เช่น events/performance) ให้เปิดด้วย cipher เดียวกัน
+  }
+}
+
+
+✅ Permission Minimization (Runtime เฉพาะที่จำเป็นจริง)
+// lib/services/permission_service.dart
+import 'package:permission_handler/permission_handler.dart';
+import 'package:office_syndrome_helper/services/database_service.dart';
+
+
+class PermissionService {
+  static Future<bool> ensureNotificationPermissionOnce() async {
+    final s = await DatabaseService.loadSettings();
+    if (!s.hasRequestedPermissions) {
+      final r = await Permission.notification.request(); // Android 13+
+      s.hasRequestedPermissions = true;
+      await DatabaseService.saveSettings(s);
+      return r.isGranted || r.isLimited;
+    }
+    final st = await Permission.notification.status;
+    return st.isGranted || st.isLimited;
+  }
+}
+
+
+✅ Image Privacy (ไม่มี EXIF/metadata + บันทึกผ่าน MediaStore)
+                                                                                                                                                                                                      * ใช้ ui.PictureRecorder() วาดข้อมูลลง ui.Image → PNG bytes
+
+                                                                                                                                                                                                      * บันทึกด้วย Gal.putImageBytes(bytes, album: 'Office Syndrome Helper')
+
+                                                                                                                                                                                                      * ไม่ใส่ชื่อ/อีเมล/รหัสใด ๆ ลงในภาพ (มี “Privacy Mode” ในหน้า Export)
+
+________________
+
+
+Android Hardening (แนะนำ)
+AndroidManifest.xml
+<application
+    android:name="${applicationName}"
+    android:label="Office Syndrome Helper"
+    android:icon="@mipmap/ic_launcher"
+    android:allowBackup="false"
+    android:supportsRtl="true">
+    <!-- ... -->
+</application>
+
+
+(ทางเลือก) ปิดแบ็กอัพอย่างชัดเจนด้วย fullBackupContent:
+<application
+    ... 
+    android:fullBackupContent="@xml/backup_rules">
+
+
+ไฟล์ android/app/src/main/res/xml/backup_rules.xml:
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- exclude ทั้งหมด -->
+    <exclude domain="file" path="."/>
+    <exclude domain="database" path="."/>
+    <exclude domain="sharedpref" path="."/>
+    <exclude domain="external" path="."/>
+</full-backup-content>
+
+
+________________
+
+
+Logs & Debug
+                                                                                                                                                                                                         * ปิด print() ในโปรดักชัน; ใช้ debugPrint ใน assert(kDebugMode) เท่านั้น
+
+                                                                                                                                                                                                         * ไม่ log ข้อมูลอ่อนไหว (ชื่อ, รายละเอียดสุขภาพ, เวลาใช้งานแบบเจาะจงตัวบุคคล)
+
+                                                                                                                                                                                                         * จัดเก็บ crash/diagnostic เฉพาะภายในเครื่อง (ออฟไลน์) หากจำเป็น
+
+________________
+
+
+Data Lifecycle
+                                                                                                                                                                                                            * Reset All Data: ปุ่มใน Settings ลบข้อมูลทุกกล่อง + ลบคีย์ hive_key → รีสตาร์ทแอป
+
+                                                                                                                                                                                                            * Key Loss Warning: หากคีย์ hive_key สูญหาย/ถูกลบ ข้อมูลเข้ารหัสจะอ่านไม่ได้ — แอปจะสร้างคีย์ใหม่และเริ่มตั้งค่าจากศูนย์ (แจ้งผู้ใช้ล่วงหน้าใน FAQ)
+
+ตัวอย่าง Reset:
+static Future<void> resetAllData() async {
+  await Hive.box('settings').clear();
+  await Hive.box('sessions').clear();
+  await Hive.box('daily_stats').clear();
+  const secure = FlutterSecureStorage();
+  await secure.delete(key: 'hive_key');
+  // แนะนำให้ปิดแอป/รีสตาร์ท flow เอง (นำผู้ใช้กลับไป Splash/Setup)
+}
+
+
+________________
+
+
+Threat Model (ย่อ)
+                                                                                                                                                                                                               * At-rest: ป้องกันด้วย AES-256 (HiveAesCipher) + คีย์ใน Keystore ผ่าน flutter_secure_storage
+
+                                                                                                                                                                                                               * In-app: ป้องกันการเรียกอ่านข้อมูลโดยไม่ตั้งใจ (guard ใน service layer, validation ทุกครั้ง)
+
+                                                                                                                                                                                                               * In-transit: ไม่มีเครือข่าย ⇒ ไม่มีช่องทางรั่วไหลผ่าน network
+
+                                                                                                                                                                                                               * Screenshots (ตัวเลือก): ถ้าต้องการป้องกันสกรีนช็อตในหน้าที่ไวต่อข้อมูล ให้ใช้ FLAG_SECURE เฉพาะหน้าดังกล่าว
+
+
+________________
+
+
+🛠️ Build & Deployment
+1) android/app/build.gradle (อัปเดตแนะนำ)
+android {
+    namespace "com.example.office_syndrome_helper"
+    compileSdk 35                         // ✅ อัปเป็น 35
+
+
+    defaultConfig {
+        applicationId "com.example.office_syndrome_helper"
+        minSdk 26
+        targetSdk 35                      // ✅ อัปเป็น 35 (ตามข้อกำหนด Play 2025)
+        versionCode 1
+        versionName "1.0.0"
+        multiDexEnabled true              // (minSdk 26 ไม่จำเป็นมาก แต่คงไว้ได้)
+    }
+
+
+    // ✅ ใช้ Java/Kotlin 17 + Desugaring 2.1.4
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+        coreLibraryDesugaringEnabled true
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+
+    signingConfigs {
+        release {
+            // ต้องมีการอ่าน keystoreProperties ด้านบนไฟล์ (ดูตัวอย่างด้านล่าง)
+            keyAlias keystoreProperties['keyAlias']
+            keyPassword keystoreProperties['keyPassword']
+            storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
+            storePassword keystoreProperties['storePassword']
+        }
+    }
+
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled true
+            shrinkResources true
+            // ✅ แนะนำ split debug symbols + obfuscate ตอนสั่ง flutter build (ดูขั้นตอน Build)
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                          'proguard-rules.pro'
+        }
+        debug {
+            // เปิดได้ตามสะดวก
+        }
+    }
+
+
+    // (ถ้าพบ resource conflict จากไลบรารีจำนวนมาก ค่อยเพิ่ม packagingOptions ตามกรณี)
+}
+
+
+dependencies {
+    // ✅ จำเป็นสำหรับ Java 8+ APIs บน minSdk ต่ำ
+    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"
+    // อื่น ๆ มาจาก Flutter/Gradle auto-inject ตาม plugin
+}
+
+
+ตัวอย่างส่วนอ่าน key.properties (วางบนสุดของ app/build.gradle)
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+
+หมายเหตุ:
+                                                                                                                                                                                                                  * Flutter 3.32 ใช้ AGP รุ่นใหม่ โดยทั่วไป JDK 17 เป็น baseline ที่ปลอดภัย
+
+                                                                                                                                                                                                                  * ถ้าโปรเจ็กต์คุณเคยติดปัญหา desugar_jdk_libs เวอร์ชันต่ำ → การตั้งค่า 2.1.4 จะเคลียร์ปัญหา plugin ใหม่อย่าง flutter_local_notifications 19.x ได้
+
+________________
+
+
+2) android/build.gradle (รูทโปรเจ็กต์) – ตรวจสอบเวอร์ชันเครื่องมือ
+                                                                                                                                                                                                                     * ให้ Flutter จัดการเวอร์ชัน AGP/Kotlin ให้ (ตาม android/gradle/wrapper/gradle-wrapper.properties ที่มาพร้อม Flutter)
+
+                                                                                                                                                                                                                     * ถ้าเจอ error เกี่ยวกับ Kotlin/AGP mismatch ให้ตั้ง:
+
+                                                                                                                                                                                                                        * Kotlin "1.9.x+" หรือที่ Flutter ระบุ
+
+                                                                                                                                                                                                                        * Gradle wrapper ตามที่ Flutter 3.32 สร้างไว้
+
+________________
+
+
+3) ProGuard / R8 rules (ระวังการยุบคลาสสำคัญ)
+ไลบรารีหลัก ๆ (WorkManager, flutter_local_notifications) มี consumer rules อยู่แล้ว ส่วนมากไม่ต้องทำอะไรเพิ่ม แต่ถ้าใช้งานพิเศษหรือถูก shrinker เกินไป ให้เพิ่มด้านล่างใน android/app/proguard-rules.pro:
+# WorkManager (ส่วนมากมี consumer rules แล้ว)
+-keep class androidx.work.** { *; }
+
+
+# Flutter Local Notifications (กันตัวคลาสปลั๊กอินโดนตัดทิ้ง)
+-keep class com.dexterous.flutterlocalnotifications.** { *; }
+
+
+# (ถ้าใช้ reflection/serializer เฉพาะกิจ ให้ keep เพิ่มเองตามโมเดล/แพ็กเกจนั้น ๆ)
+
+
+________________
+
+
+4) Release Process (อัปเดตคำสั่งให้เข้ากับ Dart 3.8)
+4.1 Code generation
+เรา ยกเลิก adapter ของ BreakPeriod แล้ว (เก็บเป็น Map แทน)
+แต่โมเดลอื่นยังใช้ Hive adapters ตามปกติ
+# ✅ คำสั่งสมัยใหม่
+dart run build_runner build --delete-conflicting-outputs
+
+
+4.2 Static checks & tests
+flutter analyze
+flutter test
+flutter test integration_test/
+
+
+4.3 Build (APK / AAB)
+แนะนำเปิด obfuscation + split debug symbols เพื่อลดขนาดและซ่อนสัญลักษณ์
+# APK
+flutter build apk --release \
+  --obfuscate \
+  --split-debug-info=build/symbols
+
+
+# App Bundle (อัปโหลด Play)
+flutter build appbundle --release \
+  --obfuscate \
+  --split-debug-info=build/symbols
+
+
+ถ้าใช้ Play App Signing (แนะนำ) ให้สร้าง/กำหนด keystore ครั้งแรกเท่านั้น จากนั้น Play จะดูแล signing ของ AAB ให้
+4.4 Verification
+# ตรวจสอบความถูกต้องของ .aab (ไม่บังคับ แต่ดี)
+# bundletool ดาวน์โหลดจาก Google
+java -jar bundletool.jar validate --bundle build/app/outputs/bundle/release/app-release.aab
+
+
+ตรวจบนเครื่องจริงก่อนปล่อย
+# ติดตั้ง APK (กรณีต้องทดสอบ sideload)
+adb install -r build/app/outputs/flutter-apk/app-release.apk
+
+
+________________
+
+
+5) Versioning & Play Console
+                                                                                                                                                                                                                           * versionCode: เพิ่มทุกครั้งที่ปล่อย (เลขจำนวนเต็ม)
+
+                                                                                                                                                                                                                           * versionName: ตัวอักษรแสดงผล เช่น "1.0.0"
+
+                                                                                                                                                                                                                           * อัปโหลด .aab ไป Play Console → Internal testing → Closed → Open → Production
+
+                                                                                                                                                                                                                           * กำหนด Target API 35, Privacy policy (ออฟไลน์/ไม่เก็บข้อมูลส่วนบุคคล) ให้ครบ
+
+________________
+
+
+6) Checklist ก่อนปล่อย (DoD – Build/Deploy)
+                                                                                                                                                                                                                              * compileSdk/targetSdk = 35 และ Build ผ่าน release
+
+                                                                                                                                                                                                                              * เปิด desugaring 2.1.4, Java/Kotlin 17
+
+                                                                                                                                                                                                                              * ไม่มี warning สำคัญจาก R8/AGP (โดยเฉพาะคลาส plugin ถูกลบทิ้ง)
+
+                                                                                                                                                                                                                              * การตั้งค่า ProGuard ทำให้แอปเปิด/แจ้งเตือน/เบื้องหลังทำงานปกติ
+
+                                                                                                                                                                                                                              * flutter analyze สะอาด, tests ผ่าน
+
+                                                                                                                                                                                                                              * AAB ผ่าน bundletool validate
+
+                                                                                                                                                                                                                              * ทดสอบบน API 26/29/31/34–35 (ตาม Test Matrix)
+
+                                                                                                                                                                                                                              * ตรวจ Startup time / ขนาดแอป / การแจ้งเตือนจริงในโหมด Release
+
+
+________________
+
+
+📚 Documentation Requirements
+โครงสร้างเอกสาร (Repository Docs Tree)
+/docs
+  /technical
+    architecture-guide.md
+    setup-instructions.md
+    api-style-guide.md
+    troubleshooting-guide.md
+    build-deployment.md
+    security-privacy.md
+    kpis.md
+  /user
+    user-manual.th.md
+    faq.th.md
+    privacy-policy.th.md
+    support-contact.md
+README.md
+CONTRIBUTING.md
+
+
+DoD (เอกสาร): ทุกไฟล์ใน /docs ต้องมีหัวข้อ, วันที่อัปเดต, ผู้รับผิดชอบ และลิงก์ข้ามไปส่วนที่เกี่ยวข้อง
+________________
+
+
+Technical Documentation
+1) API Documentation (Dart doc comments)
+ข้อกำหนด
+                                                                                                                                                                                                                                 * ครอบคลุม 100% ของ public class/constructor/public method/public field
+
+                                                                                                                                                                                                                                 * อธิบาย หน้าที่, พารามิเตอร์, สิ่งที่คืนค่า, ข้อยกเว้น, และ ตัวอย่างสั้น ๆ
+
+ตัวอย่างสไตล์
+/// คำนวณเวลานัดแจ้งเตือนครั้งถัดไปตามกติกา Working Days/Breaks/Interval.
+/// 
+/// คืนค่าเป็น DateTime (local timezone) ที่ "ถูกต้อง" แล้ว:
+/// - อยู่ในวันทำงาน
+/// - อยู่ในช่วงเวลาทำงาน
+/// - ไม่ทับช่วงพัก
+/// 
+/// Throws [StateError] เมื่อค่า settings ไม่สมบูรณ์ (เช่น workStart >= workEnd).
+DateTime calculateNextNotificationTime();
+
+
+การสร้างเอกสาร API
+dart doc --output=build/api-docs
+# หรือใช้ dart-define/CI เพื่อ verify ว่ามีคอมเมนต์ครบ (เช่น รันสคริปต์เช็ก coverage ของ dartdoc)
+
+
+________________
+
+
+2) Architecture Guide (technical/architecture-guide.md)
+ต้องมี
+                                                                                                                                                                                                                                    * แผนภาพ Flow หลัก: Splash → Setup → Home → (Schedule) → Notification → Todo → Statistics
+
+                                                                                                                                                                                                                                    * แผนภาพ Interaction:
+
+                                                                                                                                                                                                                                       * Controllers ↔ Services ↔ Hive (Encrypted)
+
+                                                                                                                                                                                                                                       * NotificationService + WorkManager integration
+
+                                                                                                                                                                                                                                          * กติกาเวลา: เก็บ นาทีตั้งแต่ 00:00 ใน UserSettings + BreakPeriods เป็น List<Map>
+
+                                                                                                                                                                                                                                          * Threading/Background: WorkManager “single registration” guard, exactAllowWhileIdle
+
+                                                                                                                                                                                                                                          * ขอบเขตออฟไลน์: ไม่มี Network, ไม่มี Analytics
+
+________________
+
+
+3) Setup Instructions (technical/setup-instructions.md)
+เนื้อหาที่ต้องมี
+                                                                                                                                                                                                                                             * Requirements: Flutter 3.32+, Dart 3.8+, Android Studio Koala+, JDK 17
+
+                                                                                                                                                                                                                                             * Android SDK: compile/target 35, minSdk 26, Gradle wrapper ตาม Flutter
+
+คำสั่งตั้งโปรเจ็กต์
+
+flutter clean
+dart pub get
+dart run build_runner build --delete-conflicting-outputs
+flutter run
+                                                                                                                                                                                                                                                *                                                                                                                                                                                                                                                 * Emulator / Device config + Timezone Asia/Bangkok
+
+                                                                                                                                                                                                                                                * การตั้งค่า keystore (release) + key.properties ตัวอย่าง
+
+________________
+
+
+4) Build & Deployment (technical/build-deployment.md)
+                                                                                                                                                                                                                                                   * สรุป android/app/build.gradle (compile/target 35, Java/Kotlin 17, desugar 2.1.4)
+
+คำสั่ง build (เปิด obfuscation + split debug symbols)
+
+flutter build appbundle --release \
+  --obfuscate --split-debug-info=build/symbols
+                                                                                                                                                                                                                                                      *                                                                                                                                                                                                                                                       * การตรวจสอบ AAB ด้วย bundletool
+
+                                                                                                                                                                                                                                                      * Test Matrix: API 26/29/31/34–35
+
+________________
+
+
+5) Troubleshooting Guide (technical/troubleshooting-guide.md)
+ต้องมีเคสต่อไปนี้ (พร้อมวิธีแก้):
+                                                                                                                                                                                                                                                         1. desugar_jdk_libs ต้อง ≥ 2.1.4
+ อาการ: CheckAarMetadata แจ้งต้อง 2.1.4 แต่โปรเจ็กต์ใช้ 2.0.x
+วิธีแก้: coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4" + เปิด coreLibraryDesugaringEnabled true
+
+                                                                                                                                                                                                                                                         2. WorkManager เก่า/โค้ดฝั่ง shim ไม่รู้จัก
+ อาการ: Unresolved reference 'shim' / PluginRegistrantCallback
+ วิธีแก้: อัป workmanager รุ่นล่าสุดเข้ากับ Flutter embedding v2, Kotlin 1.9+, JDK 17, ลบโค้ด registrar เก่า
+
+                                                                                                                                                                                                                                                         3. image_gallery_saver ไม่มี namespace / build fail
+ วิธีแก้: เปลี่ยนเป็น gal แล้วใช้ Gal.putImageBytes(...)
+
+                                                                                                                                                                                                                                                         4. Flutter Local Notifications พารามิเตอร์ไม่ตรง
+ อาการ: uiLocalNotificationDateInterpretation ไม่พบ
+วิธีแก้: อัปเป็น FLN 19.x และใช้ AndroidScheduleMode.exactAllowWhileIdle
+
+                                                                                                                                                                                                                                                         5. fl_chart + vector_math method ไม่พบ (translateByDouble)
+ วิธีแก้: อัป fl_chart เป็น 1.1.0 และให้ vector_math เวอร์ชันที่รองรับ (ล่าสุดจาก Flutter 3.32)
+
+                                                                                                                                                                                                                                                         6. build_runner ชนกับ hive_generator
+ วิธีแก้: ใช้ hive_generator ^2.x + build_runner ^2.5.x ให้ตรงกัน และ เลิกใช้ Adapter ของ BreakPeriod
+
+                                                                                                                                                                                                                                                         7. Namespace not specified ในไลบรารีเก่า
+ วิธีแก้: อัปปลั๊กอินหรือเปลี่ยนปลั๊กอิน (เช่นเปลี่ยน image lib), หรือกำหนด namespace ในโมดูลที่เกี่ยวข้อง
+
+ทุกเคสให้แนบสคริปต์เช็กเวอร์ชัน/ตัวอย่าง build.gradle สั้น ๆ
+________________
+
+
+6) Security & Privacy (technical/security-privacy.md)
+                                                                                                                                                                                                                                                            * Local-only, No Analytics
+
+                                                                                                                                                                                                                                                            * Hive Encryption (secure storage base64 key), allowBackup=false, optional FLAG_SECURE
+
+                                                                                                                                                                                                                                                            * Data reset flow + warning เรื่อง key สูญหาย
+
+                                                                                                                                                                                                                                                            * Permissions minimization (POST_NOTIFICATIONS, RECEIVE_BOOT_COMPLETED, VIBRATE, WAKE_LOCK)
+
+________________
+
+
+7) KPIs (technical/kpis.md)
+                                                                                                                                                                                                                                                               * ตาราง Technical / UX / Business + สูตรคำนวณ + เกณฑ์ผ่าน (ตามที่สรุปไปก่อนหน้า)
+
+                                                                                                                                                                                                                                                               * วิธีเก็บตัวเลขแบบออฟไลน์ (events, daily_stats, performance sampler)
+
+________________
+
+
+User Documentation
+1) User Manual (ภาษาไทย) (user/user-manual.th.md)
+โครงเรื่อง
+                                                                                                                                                                                                                                                                  * แนะนำแอป & แนวคิด “พัก-ยืดเหยียด”
+
+                                                                                                                                                                                                                                                                  * เริ่มต้นใช้งาน (ติดตั้ง → อนุญาตแจ้งเตือน → เลือกจุดปวด 1–3)
+
+                                                                                                                                                                                                                                                                  * หน้า Home: ความหมายของ Countdown, สถิติวันนี้, ปุ่มลัด
+
+                                                                                                                                                                                                                                                                  * หน้า Todo: วิธีทำท่าทั้ง 2, ปุ่ม “เสร็จแล้ว/เลื่อน/ข้าม”
+
+                                                                                                                                                                                                                                                                  * หน้า Settings: วันทำงาน 7 วัน, ช่วงพัก (ไม่บังคับ), ช่วงเวลาทำงาน, เสียง/สั่น
+
+                                                                                                                                                                                                                                                                  * หน้า Statistics: ดูช่วง (วันนี้/7/30/90/เดือน), บันทึกรูป
+
+                                                                                                                                                                                                                                                                  * คำแนะนำการปรับให้เข้ากับงานของตัวเอง
+
+2) FAQ (user/faq.th.md)
+ตัวอย่างคำถาม
+                                                                                                                                                                                                                                                                     * ทำไมไม่เตือนตอนพักกลางวัน? (ระบบจะหยุดแจ้งในช่วงพักที่ตั้งไว้)
+
+                                                                                                                                                                                                                                                                     * เลือกได้แค่ 1–3 จุด ทำไม? (เพื่อโฟกัสและทำได้จริงในเวลาสั้น)
+
+                                                                                                                                                                                                                                                                     * แบตหมดไวไหม? (ออกแบบให้ไม่เกิน ~2%/วัน)
+
+                                                                                                                                                                                                                                                                     * แจ้งเตือนช้า/เร็วไป? (±30s, มีปัจจัย Doze/อุปกรณ์)
+
+                                                                                                                                                                                                                                                                     * เปลี่ยนอุปกรณ์แล้วข้อมูลหาย? (ข้อมูลเก็บเฉพาะเครื่อง)
+
+3) Privacy Policy (ไทย) (user/privacy-policy.th.md)
+สาระสำคัญ (ตัวอย่างย่อ):
+                                                                                                                                                                                                                                                                        * แอปทำงาน ออฟไลน์ 100% — ไม่ส่งข้อมูลใด ๆ ออกนอกอุปกรณ์
+
+                                                                                                                                                                                                                                                                        * เก็บข้อมูลการตั้งค่า/สถิติภายในเครื่อง และ เข้ารหัส ด้วย Hive + Secure Storage
+
+                                                                                                                                                                                                                                                                        * สิทธิ์ที่ขอ: แจ้งเตือน, รับเหตุการณ์หลังบูต, สั่น, ตื่นเครื่อง
+
+                                                                                                                                                                                                                                                                        * ผู้ใช้กด “รีเซ็ตข้อมูล” เพื่อลบข้อมูลทั้งหมดได้ทันที
+
+                                                                                                                                                                                                                                                                        * ไม่มีการรวบรวมข้อมูลส่วนบุคคล / ไม่มี Analytics / ไม่มีโฆษณา
+
+4) Support Contact (user/support-contact.md)
+                                                                                                                                                                                                                                                                           * ช่องทางติดต่อ (แก้ไขให้เป็นของคุณ):
+
+                                                                                                                                                                                                                                                                              * อีเมล: support@yourdomain.tld
+
+                                                                                                                                                                                                                                                                              * เวลาทำการ: จ.–ศ. 09:00–18:00 (ICT)
+
+                                                                                                                                                                                                                                                                              * ระบุข้อมูลที่ควรแนบ: เวอร์ชันแอป, รุ่นเครื่อง, Android เวอร์ชัน, ขั้นตอนที่ทำก่อนเกิดปัญหา
+
+________________
+
+
+การเขียน/จัดการเอกสาร
+มาตรฐาน & การบังคับใช้
+                                                                                                                                                                                                                                                                                 * ใช้ Markdown UTF-8, หัวข้อ #, ## สอดคล้องกัน
+
+                                                                                                                                                                                                                                                                                 * ทุก PR ที่แตะโค้ด ต้อง แตะเอกสารที่เกี่ยวข้อง (CI ตรวจไฟล์ใน /docs)
+
+                                                                                                                                                                                                                                                                                 * README.md สรุปโปรเจ็กต์, ลิงก์ไปเอกสารย่อยทั้งหมด
+
+                                                                                                                                                                                                                                                                                 * CONTRIBUTING.md อธิบาย flow: branch, commit message, code style, doc style
+
+เครื่องมือเผยแพร่ (ตัวเลือก)
+                                                                                                                                                                                                                                                                                    * ถ้าต้องการหน้าเว็บเอกสาร: ใช้ MkDocs Material
+
+mkdocs.yml ตัวอย่าง:
+
+site_name: Office Syndrome Helper Docs
+theme: material
+nav:
+  - Overview: README.md
+  - Technical:
+    - Architecture: docs/technical/architecture-guide.md
+    - Setup: docs/technical/setup-instructions.md
+    - Build & Deploy: docs/technical/build-deployment.md
+    - Troubleshooting: docs/technical/troubleshooting-guide.md
+    - Security & Privacy: docs/technical/security-privacy.md
+    - KPIs: docs/technical/kpis.md
+  - User:
+    - คู่มือใช้งาน: docs/user/user-manual.th.md
+    - FAQ: docs/user/faq.th.md
+    - นโยบายความเป็นส่วนตัว: docs/user/privacy-policy.th.md
+    - ติดต่อเรา: docs/user/support-contact.md
+                                                                                                                                                                                                                                                                                       *                                                                                                                                                                                                                                                                                        * รันดู: pip install mkdocs-material && mkdocs serve
+
+________________
+
+
+เช็กลิสต์ส่งมอบเอกสาร (Definition of Done)
+                                                                                                                                                                                                                                                                                          * API doc ครบ 100% ของ public API (ตรวจด้วย dart doc)
+
+                                                                                                                                                                                                                                                                                          * Architecture guide มีแผนภาพ flow + interaction ครบ (อัปเดตตามโค้ดล่าสุด)
+
+                                                                                                                                                                                                                                                                                          * Setup/Build/Deploy ทดลองตามเอกสารแล้ว build สำเร็จในเครื่องสะอาด
+
+                                                                                                                                                                                                                                                                                          * Troubleshooting มีเคสทั้งหมดที่ลิสต์ไว้ (พร้อมขั้นตอนแก้)
+
+                                                                                                                                                                                                                                                                                          * User Manual/FAQ/Privacy/Support เป็นภาษาไทยและอ่านง่าย
+
+                                                                                                                                                                                                                                                                                          * README ลิงก์ครบทุกหัวข้อใน /docs
+
+                                                                                                                                                                                                                                                                                          * เวอร์ชัน/วันที่ปรับปรุงล่าสุด ถูกอัปเดตทุกครั้งที่แก้เอกสาร
+
+
+________________
+
+
+📋 Acceptance Criteria & Definition of Done
+✅ Must Have (MVP) — ปรับปรุงใหม่
+                                                                                                                                                                                                                                                                                             * รองรับ Android 8.0–14 โดยไม่ crash
+ Verify: รัน debug/release บน API 26/29/31/34–35 ผ่าน, ไม่มี fatal error
+
+                                                                                                                                                                                                                                                                                             * Fixed-interval notification แม่นยำ (±30 วินาที)
+ Verify: บันทึก scheduledTime/actualTime, p95 |Δt| ≤ 30s
+
+                                                                                                                                                                                                                                                                                             * เลือกจุดปวดได้ 1–3 จุด (ไม่บังคับครบ 3)
+ Verify: UI/validation + บันทึก selectedPainPointIds ใน UserSettings
+
+                                                                                                                                                                                                                                                                                             * เลือกวันทำงานได้ครบ 7 วัน (รวมเสาร์–อาทิตย์)
+ Verify: shouldNotifyAt() คืนค่า true/false ถูกต้องตามวัน
+
+                                                                                                                                                                                                                                                                                             * ช่วงพักไม่บังคับ (จะมี/ไม่มีก็ได้)
+Verify: breakPeriods เป็น List<Map>; ค่าว่าง = ไม่มีพัก
+
+                                                                                                                                                                                                                                                                                             * Break time บล็อกการแจ้งเตือน
+ Verify: _findNextValidTime() กระโดดข้ามช่วงพักเสมอ
+
+                                                                                                                                                                                                                                                                                             * สุ่มท่าออกกำลังกาย 2 ท่าไม่ซ้ำกันในรอบเดียว
+ Verify: RandomService.selectRandomTreatments(..., count:2) ไม่คืนค่าซ้ำ
+
+                                                                                                                                                                                                                                                                                             * Todo flow ครบ (แจ้งเตือน → ทำ → บันทึก)
+Verify: อัปเดต NotificationSession.status, DailyStats
+
+                                                                                                                                                                                                                                                                                             * Snooze/Skip ทำงานถูกต้อง (+จำกัด snooze ตาม maxSnoozeCount)
+ Verify: Snooze = schedule ใหม่ + นับ snoozeCount; Skip = ปิดรอบ
+
+                                                                                                                                                                                                                                                                                             * เปลี่ยน Settings แล้วมีผลทันที
+ Verify: เรียก reconfigure: cancelAll() + schedule next ใหม่ภายใน 1s
+
+                                                                                                                                                                                                                                                                                             * Statistics คำนวณถูก (วันนี้/สัปดาห์)
+Verify: ค่าใน DailyStats ตรงกับ sessions ที่เกิดขึ้น
+
+                                                                                                                                                                                                                                                                                             * แชร์แบบ “บันทึกรูปภาพ” ทำงานได้ (ผ่าน gal)
+Verify: ได้ PNG, savedToGallery==true, ไม่มีข้อมูลส่วนตัว
+
+                                                                                                                                                                                                                                                                                             * หน้า Home มีข้อความ “พร้อมดูแลคุณ”
+ Verify: แสดงเสมอเมื่อเปิดใช้งานระบบแจ้งเตือน
+
+                                                                                                                                                                                                                                                                                             * Real-time countdown อัปเดตทุกวินาที (หยุดเมื่อหน้าไม่ active)
+Verify: ไม่มี jank/รั่วทรัพยากร; timer ยกเลิกใน onClose()
+
+                                                                                                                                                                                                                                                                                             * Permission flow รองรับ Android 13+ (POST_NOTIFICATIONS)
+Verify: ขอครั้งแรกเท่านั้น; 12 ลงไปไม่ต้อง runtime
+
+                                                                                                                                                                                                                                                                                             * Background re-schedule ทำได้หลังรีบูต (ผ่าน WorkManager, ไม่ใช้ BootReceiver)
+Verify: รีบูตเครื่อง/เอมูฯ แล้วยังมีนัดถัดไปถูกตั้ง
+
+                                                                                                                                                                                                                                                                                             * Security/Privacy ตรงสเปค: Offline-only, Hive encrypted, ไม่มี analytics
+Verify: เปิดกล่อง Hive ด้วย HiveAesCipher, มี key ใน flutter_secure_storage, ไม่มีโค้ด network
+
+________________
+
+
+👍 Should Have (Enhanced)
+                                                                                                                                                                                                                                                                                                * Weekly chart แสดง success rate
+Verify: กราฟจาก DailyStats 7 วันล่าสุด แกน/ตัวเลขไม่ทับกัน
+
+                                                                                                                                                                                                                                                                                                * Pain point frequency analysis (อิง 1–3 จุดที่เลือก)
+Verify: รวบรวมจาก painPointFrequency ตลอดช่วงที่ดู
+
+                                                                                                                                                                                                                                                                                                * Break time CRUD ครบ (เพิ่ม/แก้/ลบ + ตรวจไม่ซ้อนเวลา)
+Verify: _conflict() ป้องกันทับกันในวันเดียว
+
+                                                                                                                                                                                                                                                                                                * Test notification เพื่อวินิจฉัยปัญหา
+Verify: ปุ่ม “ทดสอบ” เรียก NotificationService.showNow(...)
+
+                                                                                                                                                                                                                                                                                                * Background re-schedule guard (WorkManager ลงทะเบียน ครั้งเดียว)
+Verify: เรียก ensureRegistered() ซ้ำแล้วไม่ลงทะเบียนซ้ำ
+
+                                                                                                                                                                                                                                                                                                * Performance ตาม benchmark
+ Verify: RAM avg < 100MB, p95 < 120MB; Battery proxy < 2%/วัน; Startup < 300ms (warm)
+
+                                                                                                                                                                                                                                                                                                * Unit test coverage > 80% (business logic)
+Verify: flutter test --coverage ≥ 80%
+
+แก้ไขจากของเดิม: เดิมมี “Boot receiver รีสโตร์ alarm” → แทนที่ด้วย WorkManager re-schedule (ไม่ต้องมี BootReceiver/Exact Alarm)
+________________
+
+
+🌱 Could Have (Future)
+                                                                                                                                                                                                                                                                                                   * Dark mode
+
+                                                                                                                                                                                                                                                                                                   * Multi-language (EN)
+
+                                                                                                                                                                                                                                                                                                   * Export/Import settings (ไฟล์เข้ารหัส)
+
+                                                                                                                                                                                                                                                                                                   * Achievement system
+
+                                                                                                                                                                                                                                                                                                   * Custom exercise addition
+
+                                                                                                                                                                                                                                                                                                   * Wear OS companion app
+
+________________
+
+
+📌 Definition of Done (DoD)
+Build & Platform
+                                                                                                                                                                                                                                                                                                      * compileSdk/targetSdk = 35, minSdk = 26, JDK/Kotlin = 17, desugaring = 2.1.4
+
+                                                                                                                                                                                                                                                                                                      * Release build ผ่าน:
+dart run build_runner build --delete-conflicting-outputs
+ flutter analyze/flutter test ผ่าน
+flutter build appbundle --release --obfuscate --split-debug-info=build/symbols
+ bundletool validate ผ่าน
+
+Quality Gates
+                                                                                                                                                                                                                                                                                                         * Test matrix ผ่านบน API 26/29/31/34–35 (debug & release)
+
+                                                                                                                                                                                                                                                                                                         * p95 timing accuracy ≤ 30s, ไม่ crash (0/1000 sessions ในรอบทดสอบ)
+
+                                                                                                                                                                                                                                                                                                         * Performance ตามเป้า (RAM/Battery/Startup)
+
+                                                                                                                                                                                                                                                                                                         * WorkManager re-schedule หลังรีบูต/อัปเดตแอป
+
+Security & Privacy
+                                                                                                                                                                                                                                                                                                            * Hive ทั้งหมดเข้ารหัสด้วยคีย์จาก flutter_secure_storage
+
+                                                                                                                                                                                                                                                                                                            * ไม่มี analytics/SDK ภายนอก, ไม่มี network call
+
+                                                                                                                                                                                                                                                                                                            * android:allowBackup="false" (หรือกำหนด fullBackupContent exclude)
+
+                                                                                                                                                                                                                                                                                                            * ปุ่ม “รีเซ็ตข้อมูล” เคลียร์ box+key ได้จริง
+
+Documentation
+                                                                                                                                                                                                                                                                                                               * API doc ครบทุก public API (สร้างด้วย dart doc)
+
+                                                                                                                                                                                                                                                                                                               * Architecture/Setup/Build/Troubleshooting/Security/KPIs อัปเดตใน /docs
+
+                                                                                                                                                                                                                                                                                                               * User Manual/FAQ/Privacy/Support (ภาษาไทย) พร้อมใช้งาน
+
+UX
+                                                                                                                                                                                                                                                                                                                  * Home แสดง “พร้อมดูแลคุณ” + countdown แบบเรียลไทม์
+
+                                                                                                                                                                                                                                                                                                                  * Settings เปลี่ยนแล้วมีผลทันที (reconfigure)
+
+                                                                                                                                                                                                                                                                                                                  * Statistics/Export PNG ทำงานครบและอ่านง่าย
+________________
+
+
+🎯 Conclusion
+Conclusion (v6 • 2025)
+Office Syndrome Helper v6.0 เป็นแอปออฟไลน์ 100% ที่ช่วยคนทำงานจัดจังหวะ “พัก—ยืดเหยียด—กลับไปโฟกัส” อย่างยืดหยุ่น ใช้ง่าย ปลอดภัย และไม่รบกวนงาน โดยคงจุดเด่นของ v5 และปรับปรุงโครงสร้าง/เทคนิคให้ทันสมัยขึ้น
+Key Success Factors
+                                                                                                                                                                                                                                                                                                                     * ความยืดหยุ่น — เลือก 1–3 จุดปวด, เลือกวันทำงานได้ ครบ 7 วัน, ช่วงพักไม่บังคับ
+
+                                                                                                                                                                                                                                                                                                                     * ความเป็นมิตร — ข้อความ “พร้อมดูแลคุณ”, โทน UX อบอุ่น, ยืนยันการเปลี่ยนค่าอย่างเข้าใจง่าย
+
+                                                                                                                                                                                                                                                                                                                     * ความเรียบง่าย — แชร์ แบบรูปภาพอย่างเดียว (ไม่มีโซเชียลอินทิเกรต)
+
+                                                                                                                                                                                                                                                                                                                     * Fixed Interval Logic — เวลาแจ้งเตือนแม่นยำ ±30 วินาที ภายใต้ Doze/idle
+
+                                                                                                                                                                                                                                                                                                                     * Smart Randomization — สุ่มท่า 2 ท่า ไม่ซ้ำกันในรอบเดียว และสัมพันธ์กับจุดที่เลือก
+
+                                                                                                                                                                                                                                                                                                                     * Data-Driven Insights — สถิติรายวัน/สัปดาห์, อัตราสำเร็จ, ความถี่จุดปวด, สตรีค
+
+ปรับปรุงเกิน v5: ใช้ WorkManager (ไม่ต้อง BootReceiver/Exact Alarm), ปลั๊กอินอัปเดต, Hive เข้ารหัส, โครงสร้างข้อมูลเวลาเป็น “นาที”, BreakPeriod เป็น Map (ยืดหยุ่น/ทดสอบง่าย)
+________________
+
+
+📱 User Story & Experience Guide (v6)
+โฟกัส “ใช้งานจริง” + “ข้อความ UI พร้อมใช้” + “ผลกระทบต่อระบบ/สถิติ”
+(ทุกขั้นทำงาน ออฟไลน์ และสะท้อนเข้ากับ UserSettings, NotificationSession, DailyStats)
+1) First-time Setup (MVP)
+เป้าหมาย: ตั้งค่าครั้งแรกให้จบภายใน < 2 นาที
+ลำดับ
+                                                                                                                                                                                                                                                                                                                        1. Splash → ตรวจฐานข้อมูล Hive (เข้ารหัส) → โหลด/สร้าง UserSettings.defaults()
+
+                                                                                                                                                                                                                                                                                                                        2. ขออนุญาตแจ้งเตือน (Android 13+)
+
+                                                                                                                                                                                                                                                                                                                           * ข้อความ: “เพื่อเตือนช่วงพักให้ตรงเวลา ขออนุญาตการแจ้งเตือนนะครับ/ค่ะ”
+
+                                                                                                                                                                                                                                                                                                                              3. เลือกจุดที่ปวด (1–3 จุด)
+
+                                                                                                                                                                                                                                                                                                                                 * Header: “เลือกจุดที่อยากดูแล (1–3 จุด)”
+
+                                                                                                                                                                                                                                                                                                                                 * Counter สด: “เลือกแล้ว: X/3 จุด”
+
+                                                                                                                                                                                                                                                                                                                                 * เมื่อครบ 3 จุดแล้ว แตะอันที่ 4 → Toast: “เลือกได้สูงสุด 3 จุด”
+
+                                                                                                                                                                                                                                                                                                                                    4. วันทำงาน/ช่วงเวลา/ช่วงพัก (ไม่บังคับ)
+
+                                                                                                                                                                                                                                                                                                                                       * วันทำงาน: 1–7 (จ→อา)
+
+                                                                                                                                                                                                                                                                                                                                       * เวลาเริ่ม–สิ้นสุด (นาทีตั้งแต่ 00:00)
+
+                                                                                                                                                                                                                                                                                                                                       * ช่วงพัก: เพิ่มได้หลายช่วง/วัน ต้องไม่ซ้อนเวลา
+
+                                                                                                                                                                                                                                                                                                                                          5. เสร็จสิ้น → นำไปหน้า Home
+
+บันทึกลงระบบ
+                                                                                                                                                                                                                                                                                                                                             * selectedPainPointIds, workingDays, workStartMinutes, workEndMinutes, breakPeriods (List<Map>)
+
+________________
+
+
+2) Home (MVP)
+หัวเรื่อง: “🏠 Office Syndrome Helper”
+ แถบสถานะ:
+                                                                                                                                                                                                                                                                                                                                                * “🟢 พร้อมดูแลคุณ” (เมื่อ system เปิดใช้งาน)
+
+                                                                                                                                                                                                                                                                                                                                                * Countdown แบบ real-time (หยุดเมื่อหน้าไม่ active)
+
+                                                                                                                                                                                                                                                                                                                                                * จุดที่ดูแล (1–3) แสดงเป็นชิป
+
+ปุ่มลัด:
+                                                                                                                                                                                                                                                                                                                                                   * [ทดสอบ] → NotificationService.showNow(...)
+
+                                                                                                                                                                                                                                                                                                                                                   * [สถิติ] → Statistics
+
+                                                                                                                                                                                                                                                                                                                                                   * [ตั้งค่า] → Settings
+
+________________
+
+
+3) Notifications → Todo Flow (MVP)
+เมื่อถึงเวลา
+                                                                                                                                                                                                                                                                                                                                                      * Title: “⏰ ถึงเวลาดูแล: {ชื่อจุด}”
+
+                                                                                                                                                                                                                                                                                                                                                      * Action: “ดูท่าออกกำลังกาย”, “เลื่อน 15 นาที”
+
+หน้าทำท่า (Todo)
+                                                                                                                                                                                                                                                                                                                                                         * แสดง 2 ท่า สุ่ม “ไม่ซ้ำ” จากจุดที่สุ่มได้
+
+                                                                                                                                                                                                                                                                                                                                                         * ปุ่ม: [เสร็จแล้ว], [เลื่อน 15 นาที], [ข้าม]
+
+                                                                                                                                                                                                                                                                                                                                                         * “เสร็จแล้ว” → อัปเดต DailyStats.completedSessions++, รวมเวลาที่ใช้จริง
+
+                                                                                                                                                                                                                                                                                                                                                         * “เลื่อน” → นับ snoozeCount และคำนวณนัดใหม่ (เคารพวัน/ช่วงทำงาน/พัก)
+
+                                                                                                                                                                                                                                                                                                                                                         * “ข้าม” → ปิดรอบ, บันทึกสถิติ
+
+________________
+
+
+4) Settings → Change Confirmation (MVP)
+การแก้จุดที่ปวด (ตัวอย่างตามเรื่อง “มิ้น”)
+                                                                                                                                                                                                                                                                                                                                                            * แตะยกเลิก “ข้อมือ/มือ/นิ้ว” → จาก ✅ เป็น ☐ (fade out)
+
+                                                                                                                                                                                                                                                                                                                                                            * แตะ “หลังส่วนบน” → จาก ☐ เป็น ✅ (glow เขียว)
+
+                                                                                                                                                                                                                                                                                                                                                            * Counter: “เลือกแล้ว: 3/3 จุด 🎯”
+
+                                                                                                                                                                                                                                                                                                                                                            * กด [บันทึก] → ระบบแสดง ยืนยันการเปลี่ยนแปลง:
+
+🔄 อัปเดตสำเร็จ!
+📍 จุดดูแลใหม่:
+• คอ
+• บ่าและไหล่
+• หลังส่วนบน (ใหม่!) ✨
+
+
+📊 ผลกระทบ:
+• ระบบจะสุ่มท่าของ “หลังส่วนบน” แทน
+• การแจ้งเตือนครั้งถัดไปใช้งานการตั้งค่าใหม่
+• สถิติเดิมยังคงอยู่ ไม่ถูกลบ
+
+
+ระบบภายใน
+                                                                                                                                                                                                                                                                                                                                                               * Save UserSettings → NotificationController.reconfigure()
+ (ยกเลิกนัดทั้งหมด แล้วคำนวณนัดถัดไปใหม่ทันที)
+
+________________
+
+
+5) Statistics & Progress (MVP + Should)
+สรุปวันนี้ และสัปดาห์ (7 วันล่าสุด)
+                                                                                                                                                                                                                                                                                                                                                                  * วันนี้: แจ้งเตือน/เสร็จ/เลื่อน/ข้าม/เวลาเฉลี่ย
+
+                                                                                                                                                                                                                                                                                                                                                                  * สัปดาห์นี้: กราฟอัตราสำเร็จรายวัน (Should)
+
+                                                                                                                                                                                                                                                                                                                                                                  * จุดที่ดูแลบ่อยสุด (จาก painPointFrequency)
+
+                                                                                                                                                                                                                                                                                                                                                                  * สตรีคปัจจุบัน/สูงสุด
+
+ปุ่ม: [ดูกราฟ], [บันทึกเป็นรูป] 📸
+                                                                                                                                                                                                                                                                                                                                                                     * บันทึกรูป → ImageExportService สร้าง PNG และ gal บันทึกลงแกลเลอรี่
+
+                                                                                                                                                                                                                                                                                                                                                                     * Toast: “📸 บันทึกรูปสำเร็จ! ไปแชร์ในแอปที่ต้องการได้เลย”
+
+________________
+
+
+6) Long-term Journey (Could)
+ระบุเป็นฟีเจอร์อนาคต เพื่อไม่เกินสcope MVP/Should
+                                                                                                                                                                                                                                                                                                                                                                        * รายงาน 30 วัน (ภาพรวม, สตรีค, เวลารวม, จุดโดดเด่น)
+
+                                                                                                                                                                                                                                                                                                                                                                        * Gamification (ภารกิจ/ระดับ/ธีมพิเศษ)
+
+                                                                                                                                                                                                                                                                                                                                                                        * AI Suggestion (แนะนำเวลาที่เหมาะจากพฤติกรรม)
+
+บันทึกไว้ในเอกสาร “Could Have” และออกแบบ API/สถิติเก็บรองรับ แต่ ไม่ผูกพันกับ DoD ของ v6
+________________
+
+
+🧩 UI Strings (พร้อมใช้ในโค้ด)
+                                                                                                                                                                                                                                                                                                                                                                           * “พร้อมดูแลคุณ”
+
+                                                                                                                                                                                                                                                                                                                                                                           * “เลือกจุดที่อยากดูแล (1–3 จุด)”
+
+                                                                                                                                                                                                                                                                                                                                                                           * “เลือกแล้ว: {X}/3 จุด”
+
+                                                                                                                                                                                                                                                                                                                                                                           * “เลือกได้สูงสุด 3 จุด”
+
+                                                                                                                                                                                                                                                                                                                                                                           * “ถึงเวลาดูแล: {จุด}”
+
+                                                                                                                                                                                                                                                                                                                                                                           * “เลื่อน 15 นาที” / “ข้าม” / “เสร็จแล้ว”
+
+                                                                                                                                                                                                                                                                                                                                                                           * “อัปเดตสำเร็จ!” / “การตั้งค่าใหม่จะมีผลกับการแจ้งเตือนครั้งถัดไป”
+
+                                                                                                                                                                                                                                                                                                                                                                           * “บันทึกรูปสำเร็จ! ไปแชร์ในแอปที่ต้องการได้เลย”
+
+________________
+
+
+🔗 ความเชื่อมโยงกับ DoD/Acceptance (Traceability)
+                                                                                                                                                                                                                                                                                                                                                                              * Fixed Interval ±30s → NotificationService.scheduleAt + log actualTime → ตรวจ p95
+
+                                                                                                                                                                                                                                                                                                                                                                              * 1–3 จุด / 7 วัน / ช่วงพักไม่บังคับ → UserSettings + shouldNotifyAt()
+
+                                                                                                                                                                                                                                                                                                                                                                              * Break time บล็อกแจ้งเตือน → _findNextValidTime() ข้ามช่วงพัก
+
+                                                                                                                                                                                                                                                                                                                                                                              * สุ่มไม่ซ้ำ → RandomService.selectRandomTreatments(count:2)
+
+                                                                                                                                                                                                                                                                                                                                                                              * Settings มีผลทันที → reconfigure(): cancelAll() + scheduleNext()
+
+                                                                                                                                                                                                                                                                                                                                                                              * Statistics/Export → DailyStats + ImageExportService (+gal)
+
+                                                                                                                                                                                                                                                                                                                                                                              * WorkManager → re-schedule หลังรีบูต (แทน BootReceiver)
+
+________________
+
+
+📝 หมายเหตุความสอดคล้องทางเทคนิค (v6)
+                                                                                                                                                                                                                                                                                                                                                                                 * ไม่มี BootReceiver / ไม่มี Exact Alarm → ใช้ WorkManager + exactAllowWhileIdle
+
+                                                                                                                                                                                                                                                                                                                                                                                 * Hive Encryption ด้วยคีย์จาก flutter_secure_storage (Base64)
+
+                                                                                                                                                                                                                                                                                                                                                                                 * เวลาทั้งหมด เก็บเป็น “นาทีตั้งแต่ 00:00” (int)
+
+                                                                                                                                                                                                                                                                                                                                                                                 * BreakPeriod เป็น List<Map<String,dynamic>> (ง่ายต่อ CRUD/ทดสอบ)
+
+
+
+1) Data & Migration (สำคัญมาก)
+                                                                                                                                                                                                                                                                                                                                                                                    * Migration v5 → v6: เพราะเราเปลี่ยนโครงข้อมูล (เช่น TimeOfDay → นาที int, BreakPeriod → Map) ห้ามแก้ typeId เดิมทับ ให้:
+
+                                                                                                                                                                                                                                                                                                                                                                                       * เปิด box ใหม่ ชั่วคราว → อ่านค่าจากของเดิม → แปลง → เขียนลง box ใหม่ → ลบของเดิม/รีเนม
+
+                                                                                                                                                                                                                                                                                                                                                                                       * เก็บ schemaVersion ใน box meta แล้วรัน migration หนึ่งครั้งใน DatabaseService.initialize()
+
+                                                                                                                                                                                                                                                                                                                                                                                          * เพิ่ม MigrationPlan.md อธิบาย step-by-step และ rollback
+
+________________
+
+
+2) Android Policy & Permissions (ลดความเสี่ยงรีวิว)
+                                                                                                                                                                                                                                                                                                                                                                                             * ตัด permissions ที่ไม่จำเป็น:
+
+                                                                                                                                                                                                                                                                                                                                                                                                * ลบ WRITE_EXTERNAL_STORAGE, USE_EXACT_ALARM, SCHEDULE_EXACT_ALARM (เราใช้ MediaStore ผ่าน gal + WorkManager อยู่แล้ว)
+
+                                                                                                                                                                                                                                                                                                                                                                                                   * สร้าง Notification Channels แยก: main, test, heads_up (สำคัญสูง) พร้อม localized name/desc
+
+                                                                                                                                                                                                                                                                                                                                                                                                   * ตั้งค่า target/compileSdk=35, AGP 8.6+, Gradle 8.7, Kotlin 2.0.x, desugar_jdk_libs ≥ 2.1.4
+
+________________
+
+
+3) WorkManager Strategy (แทน BootReceiver)
+                                                                                                                                                                                                                                                                                                                                                                                                      * ลงทะเบียน UniqueWork สำหรับ “reschedule job” (one-time + re-enqueue) เมื่อ:
+
+                                                                                                                                                                                                                                                                                                                                                                                                         * แอปสตาร์ท / แอปอัปเดต / user เปลี่ยน Settings
+
+                                                                                                                                                                                                                                                                                                                                                                                                            * ป้องกัน “ลงทะเบียนซ้ำ” ด้วย ExistingWorkPolicy.KEEP
+
+                                                                                                                                                                                                                                                                                                                                                                                                            * เพิ่ม Dev fast mode (เช่น interval 1–5 นาที) ผ่าน bool.fromEnvironment('DEV_FAST') เพื่อ QA
+
+________________
+
+
+4) Timezone & Time-change Safety
+                                                                                                                                                                                                                                                                                                                                                                                                               * ใช้ timezone init ด้วยโซน Asia/Bangkok ที่ startup
+
+                                                                                                                                                                                                                                                                                                                                                                                                               * รองรับกรณี: เปลี่ยนเวลาเครื่อง/โซน → ให้ WorkManager job ตรวจความต่าง now - scheduled > threshold แล้ว recalculate
+
+                                                                                                                                                                                                                                                                                                                                                                                                               * บันทึก lastNotificationTime ทุกครั้ง เพื่อกัน drift
+
+________________
+
+
+5) Performance Budget & Battery
+                                                                                                                                                                                                                                                                                                                                                                                                                  * Countdown: ใช้ Timer.periodic 1s เฉพาะตอนหน้า Home active (dispose เสมอ), หลีกเลี่ยง setState ถี่ๆ (ใช้ GetX workers/obx)
+
+                                                                                                                                                                                                                                                                                                                                                                                                                  * หลีกเลี่ยงฟอนต์/ภาพหนัก ๆ ในแจ้งเตือน
+
+                                                                                                                                                                                                                                                                                                                                                                                                                  * ตั้ง p50 RAM < 80MB / p95 < 120MB; ใส่โค้ด log เมมชั่วคราว (dev only)
+
+________________
+
+
+6) Accessibility & i18n
+                                                                                                                                                                                                                                                                                                                                                                                                                     * รองรับ Dynamic Type (ปรับขนาดตัวอักษร), Contrast ≥ WCAG AA, TalkBack: ใส่ semanticsLabel ในไอคอนสำคัญ
+
+                                                                                                                                                                                                                                                                                                                                                                                                                     * โครง l10n พร้อม keys (เราให้ตัวอย่างไว้แล้ว) → ง่ายต่อแปล EN ในอนาคต
+
+________________
+
+
+7) Error Handling & UX Guard
+                                                                                                                                                                                                                                                                                                                                                                                                                        * Permission ถูกปฏิเสธ: แสดง “วิธีเปิดใน Settings” พร้อม deep link ไปหน้า App Settings
+
+                                                                                                                                                                                                                                                                                                                                                                                                                        * Snooze เกินกำหนด: ปิดปุ่ม + toast อ่อนโยน
+
+                                                                                                                                                                                                                                                                                                                                                                                                                        * Break ทับซ้อน: โจทย์ชัดเจนที่ช่องเวลา (inline error + scroll to field)
+
+________________
+
+
+8) Observability (แบบออฟไลน์)
+                                                                                                                                                                                                                                                                                                                                                                                                                           * Local debug log (dev-only): ring buffer 200 บรรทัด (ไฟล์ใน app dir) → หน้า “ทดสอบ” มีปุ่ม “คัดลอก log” เพื่อดีบั๊ก
+
+                                                                                                                                                                                                                                                                                                                                                                                                                           * แสดง “เหตุผลไม่แจ้งเตือน” ใน Test Panel (เช่น นอกเวลา/ช่วงพัก/วันไม่ทำงาน)
+
+________________
+
+
+9) Testing & CI
+                                                                                                                                                                                                                                                                                                                                                                                                                              * เพิ่ม golden tests (ภาพ UI หลัก) + integration_test ครอบ flow แจ้งเตือน
+
+                                                                                                                                                                                                                                                                                                                                                                                                                              * OEM matrix (Samsung, Xiaomi/MIUI, OPPO, vivo): ทดสอบ Doze/แบตจำกัด
+
+                                                                                                                                                                                                                                                                                                                                                                                                                              * ตั้ง GitHub Actions: analyze → test → build appbundle + อัปโหลด artifacts
+
+________________
+
+
+10) Security Hardening
+                                                                                                                                                                                                                                                                                                                                                                                                                                 * Hive key: ตรวจกรณี secure storage ล้มเหลว (เช่น reset by system) → เสนอสร้าง key ใหม่ / แจ้งเตือนผู้ใช้
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                 * android:allowBackup="false" (หรือกำหนด fullBackupContent exclude boxes/keys)
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                 * ProGuard/R8: ใส่ keep rules สำหรับ WorkManager & FLN
+
+________________
+
+
+11) Docs เพิ่มเติม (ส่งงานทีม/สโตร์ง่ายขึ้น)
+                                                                                                                                                                                                                                                                                                                                                                                                                                    * docs/:
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                       * Architecture.md (sequence แจ้งเตือน/คำนวณเวลา)
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                       * MigrationPlan.md
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                       * TestingMatrix.md (เวอร์ชัน Android & OEM)
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                       * Troubleshooting.md (เช่น ไม่ดังเพราะ DND/แบต)
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                       * ReleaseChecklist.md (version bump, changelog, test steps)
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                          * Privacy Policy ระบุชัด: Offline-only, ไม่มี analytics, ขออนุญาตอะไรบ้างและทำไปเพื่ออะไร
