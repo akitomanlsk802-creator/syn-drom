@@ -14,10 +14,14 @@ class TodoPage extends GetView<TodoController> {
 
   @override
   Widget build(BuildContext context) {
-    // Set session ID when page loads
-    controller.sessionId.value = sessionId;
-    // Load exercises for selected pain points
-    controller.loadExercises(painPoints);
+    // Set loading state first to ensure it shows
+    controller.loading.value = true;
+
+    // Trigger loading after build
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      controller.sessionId.value = sessionId;
+      controller.loadExercises(painPoints);
+    });
 
     return Scaffold(
       appBar: AppBar(title: Text('ถึงเวลาดูแล: ${painPoints.join(", ")}')),
@@ -108,18 +112,18 @@ class TodoPage extends GetView<TodoController> {
                 children: [
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: controller.loading.value 
-                        ? null 
-                        : () async {
-                            await controller.onDone();
-                            if (!context.mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('บันทึกการทำแล้ว'),
-                                backgroundColor: Colors.green,
-                              ),
-                            );
-                          },
+                      onPressed: controller.loading.value
+                          ? null
+                          : () async {
+                              await controller.onDone();
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('บันทึกการทำแล้ว'),
+                                  backgroundColor: Colors.green,
+                                ),
+                              );
+                            },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.green,
                         foregroundColor: Colors.white,
@@ -131,43 +135,49 @@ class TodoPage extends GetView<TodoController> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: (controller.loading.value || !controller.canSnooze.value)
-                        ? null 
-                        : () async {
-                            final snoozed = await controller.onSnooze();
-                            if (!context.mounted) return;
-                            if (snoozed) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('เลื่อนไปอีก 15 นาที'),
-                                  backgroundColor: Colors.orange,
-                                ),
-                              );
-                            }
-                          },
+                      onPressed:
+                          (controller.loading.value ||
+                              !controller.canSnooze.value)
+                          ? null
+                          : () async {
+                              final snoozed = await controller.onSnooze();
+                              if (!context.mounted) return;
+                              if (snoozed) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text('เลื่อนไปอีก 15 นาที'),
+                                    backgroundColor: Colors.orange,
+                                  ),
+                                );
+                              }
+                            },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.orange,
                         foregroundColor: Colors.white,
                       ),
                       icon: const Icon(Icons.snooze),
-                      label: Text(controller.canSnooze.value ? 'เลื่อน 15 นาที' : 'เลื่อนไม่ได้แล้ว'),
+                      label: Text(
+                        controller.canSnooze.value
+                            ? 'เลื่อน 15 นาที'
+                            : 'เลื่อนไม่ได้แล้ว',
+                      ),
                     ),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: controller.loading.value 
-                        ? null 
-                        : () async {
-                            await controller.onSkip();
-                            if (!context.mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('ข้ามการทำครั้งนี้'),
-                                backgroundColor: Colors.red,
-                              ),
-                            );
-                          },
+                      onPressed: controller.loading.value
+                          ? null
+                          : () async {
+                              await controller.onSkip();
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('ข้ามการทำครั้งนี้'),
+                                  backgroundColor: Colors.red,
+                                ),
+                              );
+                            },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.red,
                         foregroundColor: Colors.white,

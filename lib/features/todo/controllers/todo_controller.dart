@@ -91,17 +91,13 @@ class TodoController extends GetxController {
 
       // Check if snoozing is allowed
       final stats = await _databaseService.getTodayStats();
-      print('TodoController: getTodayStats result = ${stats?.snoozed}');
       final currentSnoozed = (stats?.snoozed ?? 0);
-      print('TodoController: currentSnoozed = $currentSnoozed');
       if (currentSnoozed >= 3) {
         canSnooze.value = false;
         return false;
       }
 
-      print('TodoController: sessionId.value = ${sessionId.value}');
       final success = await _notificationService.handleSnooze(sessionId.value);
-      print('TodoController: handleSnooze result = $success');
       if (success) {
         final today = _getTodayYmd();
 
@@ -117,13 +113,11 @@ class TodoController extends GetxController {
         try {
           Get.back(); // Return to HomePage
         } catch (e) {
-          print('TodoController: Error in Get.back() = $e');
           // Ignore navigation error in tests
         }
       }
       return success;
     } catch (e) {
-      print('TodoController: Error in onSnooze = $e');
       error.value = 'Failed to snooze: $e';
       return false;
     } finally {
