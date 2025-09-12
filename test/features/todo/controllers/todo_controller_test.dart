@@ -42,8 +42,10 @@ void main() {
     test('getTwoExercises returns non-duplicate exercises', () {
       final painPoints = ['neck', 'shoulder'];
       when(mockRandomService.getTwoExercisesFor(painPoints)).thenReturn([
-        {'name': 'Exercise 1', 'description': 'Description 1'} as Map<String, dynamic>,
-        {'name': 'Exercise 2', 'description': 'Description 2'} as Map<String, dynamic>,
+        {'name': 'Exercise 1', 'description': 'Description 1'}
+            as Map<String, dynamic>,
+        {'name': 'Exercise 2', 'description': 'Description 2'}
+            as Map<String, dynamic>,
       ]);
 
       todoController.loadExercises(painPoints);
@@ -57,41 +59,48 @@ void main() {
     test('onDone increments completed count', () async {
       final today = DateTime.now().toIso8601String().split('T')[0];
       final todayStats = DailyStats(dateLocalYmd: today);
-      
-      when(mockDatabaseService.getTodayStats())
-          .thenAnswer((_) async => todayStats);
-      
-      when(mockDatabaseService.upsertDailyStats(argThat(isA<DailyStats>())))
-          .thenAnswer((_) async {});
+
+      when(
+        mockDatabaseService.getTodayStats(),
+      ).thenAnswer((_) async => todayStats);
+
+      when(
+        mockDatabaseService.upsertDailyStats(argThat(isA<DailyStats>())),
+      ).thenAnswer((_) async {});
 
       await todoController.onDone();
 
-      verify(mockDatabaseService.upsertDailyStats(argThat(
-        predicate<DailyStats>((stats) => 
-          stats.dateLocalYmd == today &&
-          stats.completed == 1 &&
-          stats.snoozed == 0 &&
-          stats.skipped == 0
+      verify(
+        mockDatabaseService.upsertDailyStats(
+          argThat(
+            predicate<DailyStats>(
+              (stats) =>
+                  stats.dateLocalYmd == today &&
+                  stats.completed == 1 &&
+                  stats.snoozed == 0 &&
+                  stats.skipped == 0,
+            ),
+          ),
         ),
-      ))).called(1);
+      ).called(1);
     });
 
     test('onSnooze respects maxSnoozeCount', () async {
       final today = DateTime.now().toIso8601String().split('T')[0];
-      final snoozeStats = DailyStats(
-        dateLocalYmd: today,
-        snoozed: 2,
-      );
+      final snoozeStats = DailyStats(dateLocalYmd: today, snoozed: 2);
 
       // Test snooze within limit
-      when(mockDatabaseService.getTodayStats())
-          .thenAnswer((_) async => snoozeStats);
-      
-      when(mockDatabaseService.upsertDailyStats(argThat(isA<DailyStats>())))
-          .thenAnswer((_) async {});
-      
-      when(mockNotificationService.handleSnooze('test_session'))
-          .thenAnswer((_) async => true);
+      when(
+        mockDatabaseService.getTodayStats(),
+      ).thenAnswer((_) async => snoozeStats);
+
+      when(
+        mockDatabaseService.upsertDailyStats(argThat(isA<DailyStats>())),
+      ).thenAnswer((_) async {});
+
+      when(
+        mockNotificationService.handleSnooze('test_session'),
+      ).thenAnswer((_) async => true);
 
       // Wait for mock setup to complete
       await Future.delayed(Duration.zero);
@@ -102,18 +111,24 @@ void main() {
       expect(canSnooze, true);
       verify(mockNotificationService.handleSnooze('test_session')).called(1);
 
-      verify(mockDatabaseService.upsertDailyStats(argThat(
-        predicate<DailyStats>((stats) => 
-          stats.dateLocalYmd == today &&
-          stats.completed == 0 &&
-          stats.snoozed == 3 &&
-          stats.skipped == 0
+      verify(
+        mockDatabaseService.upsertDailyStats(
+          argThat(
+            predicate<DailyStats>(
+              (stats) =>
+                  stats.dateLocalYmd == today &&
+                  stats.completed == 0 &&
+                  stats.snoozed == 3 &&
+                  stats.skipped == 0,
+            ),
+          ),
         ),
-      ))).called(1);
+      ).called(1);
 
-      // Test snooze at limit 
-      when(mockDatabaseService.getTodayStats())
-          .thenAnswer((_) async => DailyStats(dateLocalYmd: today, snoozed: 3));
+      // Test snooze at limit
+      when(
+        mockDatabaseService.getTodayStats(),
+      ).thenAnswer((_) async => DailyStats(dateLocalYmd: today, snoozed: 3));
 
       final cannotSnooze = await todoController.onSnooze();
       expect(cannotSnooze, false);
@@ -123,23 +138,30 @@ void main() {
     test('onSkip increments skipped count', () async {
       final today = DateTime.now().toIso8601String().split('T')[0];
       final todayStats = DailyStats(dateLocalYmd: today);
-      
-      when(mockDatabaseService.getTodayStats())
-          .thenAnswer((_) async => todayStats);
-      
-      when(mockDatabaseService.upsertDailyStats(argThat(isA<DailyStats>())))
-          .thenAnswer((_) async {});
+
+      when(
+        mockDatabaseService.getTodayStats(),
+      ).thenAnswer((_) async => todayStats);
+
+      when(
+        mockDatabaseService.upsertDailyStats(argThat(isA<DailyStats>())),
+      ).thenAnswer((_) async {});
 
       await todoController.onSkip();
 
-      verify(mockDatabaseService.upsertDailyStats(argThat(
-        predicate<DailyStats>((stats) => 
-          stats.dateLocalYmd == today &&
-          stats.completed == 0 &&
-          stats.snoozed == 0 &&
-          stats.skipped == 1
+      verify(
+        mockDatabaseService.upsertDailyStats(
+          argThat(
+            predicate<DailyStats>(
+              (stats) =>
+                  stats.dateLocalYmd == today &&
+                  stats.completed == 0 &&
+                  stats.snoozed == 0 &&
+                  stats.skipped == 1,
+            ),
+          ),
         ),
-      ))).called(1);
+      ).called(1);
     });
   });
 }

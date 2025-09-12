@@ -1,73 +1,51 @@
 เยี่ยมมากครับ CEO 🎉
-สรุปจากที่รายงานมา: ตอนนี้ TodoController tests ผ่านแล้ว โดยใช้ mockito + services.mocks.dart (gen จาก build_runner) และแก้ปัญหา path/mocks ได้ครบ
+จากรายงานนี้ Dev ได้อัปเดต TodoPage ครบตาม PR Checklist ที่เรากำหนดไว้แล้ว:
 
-เพื่อไม่ให้เสียเวลาไป-กลับอีก รอบนี้ให้สั่ง dev แบบ “ปิดงานให้เรียบแล้วไป UI” ตามนี้ครับ:
+✅ ความคืบหน้า TodoPage
 
-📢 ข้อความส่งให้ Dev (ก็อปได้เลย)
+Initialization: set sessionId + loadExercises() ตอน build
 
-✅ ยืนยัน: TodoController tests ผ่านครบ—ดีมาก
-🔒 ล็อกแนวทางที่ใช้จริงตอนนี้: ใช้ mockito + services.mocks.dart ที่ gen จาก test/mocks/services.dart เพียงจุดเดียว
+Exercise card layout: มี icon, target area, spacing ดีขึ้น
 
-1) เก็บกวาดให้สะอาดก่อน
+Button handling: loading states, error SnackBar, dynamic snooze, theme consistent
 
-ลบไฟล์เทส/ม็อคที่ซ้ำหรือเสียหายทั้งหมด (*_fixed.dart, services_mock.dart, mocks เก่า ๆ)
+UX: feedback + checks + clear states
 
-.gitignore คง **/*.mocks.dart และ **/*.g.dart
+ตรงกับ Acceptance Criteria:
 
-ยกเลิกการ “pin analyzer” ใน pubspec.yaml (อย่า fix เวอร์ชัน analyzer เอง เพราะชน hive_generator)
+แสดง 2 ท่าไม่ซ้ำ พร้อมชื่อ/คำอธิบาย/target area
 
-ทุกไฟล์ import ด้วย package:office_syndrome_helper/... เท่านั้น (ไม่มี relative path)
+ปุ่ม Done (เขียว), Snooze (ส้ม, dynamic state, respect maxSnoozeCount), Skip (แดง)
 
-2) คำสั่งมาตรฐานก่อน commit
-flutter clean
-flutter pub get
-flutter pub run build_runner build --delete-conflicting-outputs
-flutter analyze
-flutter test -r expanded
+ใช้ GetX Obx reactive state
 
+มี error/loading state + SnackBar feedback
 
-แนบสกรีน analyze และ test ผ่าน
+🚦 ขั้นต่อไป
 
-3) ไปต่อ TodoPage UI
+ทดสอบซ้ำ (ก่อน merge PR)
 
-แสดง 2 ท่า ไม่ซ้ำ (ชื่อ + คำอธิบายย่อ)
+flutter analyze → ไม่มี error/warning
 
-ปุ่ม Done / Snooze 15m / Skip
+flutter test -r expanded → เทสต์ TodoController + TodoPage ครบ
 
-Snooze: disable เมื่อถึง maxSnoozeCount
+Widget test (ถ้ามี): Render TodoPage → verify ว่ามี 2 ท่า, ปุ่มทำงานจริง
 
-แสดง empty/error state หากสุ่มได้ < 2 ท่า
+PR Review
 
-ผูกกับเมธอดใน TodoController (ไม่เรียก service ตรงจาก UI)
+ชื่อ PR: “Sprint 3 – TodoPage”
 
-4) Widget/Integration Tests (สั้น กระชับ)
+แนบสกรีน flutter test ผ่าน
 
-Render TodoPage → เห็น 2 ท่า
+แนบคลิป/ภาพเดโมกดปุ่ม Done/Snooze/Skip → UI ตอบสนองถูกต้อง
 
-Tap Done → verify เรียก onDone() และผลลัพธ์สะท้อนใน mock (ใช้ verify)
+ติ๊กครบตาม PR Checklist
 
-Tap Snooze (ยังไม่ถึงลิมิต) → verify เรียก schedule +15m
+Merge → ปิด TodoPage ได้
+จากนั้นไปต่อ SettingsPage (Sprint 3 ส่วนถัดไป)
 
-เมื่อถึงลิมิต → ปุ่ม Snooze ต้อง disabled
+📌 แนะนำให้สั่ง Dev:
 
-Tap Skip → verify onSkip()
+ให้รัน flutter analyze และ flutter test -r expanded อีกครั้ง, แนบผล + เดโม UI มาใน PR “Sprint 3 – TodoPage” ถ้าผ่านครบให้ merge ได้เลย แล้วเตรียมไปต่อที่ SettingsPage
 
-5) เปิด PR: “Sprint 3 – TodoPage”
-
-แนบ:
-
-สกรีน flutter test ผ่าน
-
-คลิป/ภาพเดโม UI (2 ท่า + กด Done/Snooze/Skip)
-
-ติ๊กครบตาม PR Checklist – TodoPage (scope guard / business logic / UI / tests / code quality)
-
-หมายเหตุสำคัญ (กันวนลูป)
-
-อย่าปรับ dependency analyzer ใน pubspec.yaml เอง ให้ใช้ตัวที่มากับ Flutter SDK เพื่อลด conflict กับ generator
-
-ศูนย์กลาง mocks = test/mocks/services.dart → ผลลัพธ์ services.mocks.dart เท่านั้น
-
-ถ้าต้องแก้ behavior ด้าน navigation ให้ฉีด callback (DI) แทนการเรียก Get.back() ตรง ๆ ใน controller เพื่อให้ทดสอบได้ง่าย
-
-ทำตามนี้ dev จะปิด TodoPage ได้เร็วและไม่หลุดสโคป แล้วเราจะขยับไป SettingsPage ต่อได้ทันทีครับ ✅
+CEO ต้องการให้ผมร่าง PR Template – Sprint 3 TodoPage แบบ Markdown สั้น ๆ สำหรับใช้เปิด PR ครั้งนี้เลยมั้ยครับ? จะได้ copy ไปใช้ตรง ๆ 🚀
