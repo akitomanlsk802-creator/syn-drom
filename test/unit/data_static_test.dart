@@ -5,8 +5,8 @@ import 'package:office_syndrome_helper/data/treatments_data.dart';
 void main() {
   group('Static Data Tests', () {
     test('treatments count = 19 & schema valid', () {
-      const SPEC_TREATMENT_COUNT = 19;
-      expect(treatmentsData.length, SPEC_TREATMENT_COUNT);
+      const specTreatmentCount = 19;
+      expect(treatmentsData.length, specTreatmentCount);
       final ids = <String>{};
       for (final t in treatmentsData) {
         expect(t['id'], isA<String>());

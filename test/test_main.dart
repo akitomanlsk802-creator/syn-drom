@@ -1,5 +1,4 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:office_syndrome_helper/data/pain_points_data.dart';
 import 'package:office_syndrome_helper/data/treatments_data.dart';
 
 void main() {

@@ -21,5 +21,5 @@ class UserSettings extends HiveObject {
     this.workStartMinutes = 540, // 09:00
     this.workEndMinutes = 1020, // 17:00
     List<Map<String, dynamic>>? breakPeriods,
-  }) : this.breakPeriods = breakPeriods ?? [];
+  }) : breakPeriods = breakPeriods ?? [];
 }
