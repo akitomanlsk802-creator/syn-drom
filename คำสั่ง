@@ -1,60 +1,118 @@
-สิ่งที่ต้องบอก Dev “ตอนนี้เลย”
+เยี่ยมมาก Dev ✅
+สรุปคำสั่งดำเนินการ “ตอนนี้” และลำดับทำงานสำหรับ Sprint 3 – SettingsPage (พร้อมนิยามผ่านงาน):
 
-เปิด PR: “Sprint 3 – TodoPage”
+0) ปิดงาน TodoPage
 
-ใช้ไฟล์ pr_template_todo_page.md ที่เตรียมไว้
+เปิด PR ชื่อ “Sprint 3 – TodoPage” โดยใช้ pr_template_todo_page.md และติ๊กครบใน pr_checklist_todo_page.md.
 
-แนบสกรีน: flutter analyze และ flutter test -r expanded ผ่าน
+แนบสกรีน flutter analyze + flutter test -r expanded และเดโมกด Done/Snooze/Skip.
 
-แนบเดโม (ภาพ/คลิป) กด Done / Snooze / Skip แล้ว UI/สถิติตอบสนองถูกต้อง
+1) เริ่ม SettingsPage – โครงไฟล์
+lib/features/settings/
+  controllers/settings_controller.dart
+  presentation/pages/settings_page.dart
+  widgets/… (ถ้ามี)
+test/features/settings/
+  controllers/settings_controller_test.dart
+  presentation/settings_page_test.dart
 
-เก็บโค้ดให้สะอาด: ไม่มีไฟล์ mock ซ้ำ, imports เป็น package:office_syndrome_helper/... ทั้งหมด
 
-มาตรฐาน mocks/test ที่ต้องยึด
+ทุกไฟล์ import แบบ package:office_syndrome_helper/...
 
-ใช้ mockito จาก test/mocks/services.dart → gen services.mocks.dart ที่เดียว
+2) Interfaces ที่ต้องเรียก
 
-ก่อน commit รัน:
+IDatabaseService → load/save UserSettings
 
+INotificationService/NotificationController → onSettingsChanged() หลังบันทึก
+
+3) ฟอร์ม & กติกา (Validation)
+
+Notification toggle: on/off
+
+Interval: เลือกจาก {30, 45, 60, 90, 120} นาที → ค่าที่ไม่อยู่ในเซ็ต “ไม่ผ่าน”
+
+Work hours: workStartMinutes < workEndMinutes
+
+Working days: อย่างน้อย 1 วัน
+
+Break periods:
+
+รูปแบบ [startMinute, endMinute) ภายในวัน
+
+ห้ามซ้อนทับกัน (ตรวจด้วย interval overlap)
+
+Sound/Vibration: boolean
+
+Max snooze count: 0..N (ตั้งค่าตาม spec)
+
+Pain points: ต้องเลือก 1–3 (น้อย/มากกว่านี้ “ไม่ผ่าน”)
+
+ตัวอย่าง validator (ยกไปใช้ใน controller/test ได้):
+
+bool isValidInterval(int v) => const {30,45,60,90,120}.contains(v);
+
+bool isValidWorkHours(int start, int end) => start >= 0 && end <= 24*60 && start < end;
+
+bool hasOverlap(List<(int start,int end)> ps) {
+  final sorted = [...ps]..sort((a,b)=>a.$1.compareTo(b.$1));
+  for (var i=1;i<sorted.length;i++) {
+    if (sorted[i-1].$2 > sorted[i].$1) return true;
+  }
+  return false;
+}
+
+4) การทำงานเมื่อกด “บันทึก”
+
+ตรวจ form.validate() → ไม่ผ่านให้แสดง error state ชัดเจน (SnackBar/HelperText)
+
+Persist ผ่าน IDatabaseService.upsertUserSettings(...)
+
+เรียก NotificationController.onSettingsChanged() ทันที
+
+แสดงผลสำเร็จ และ Navigator.pop() (ในเทสต์ mock callback/DI ได้)
+
+5) Tests (ต้องมี)
+
+Unit – settings_controller_test.dart
+
+interval validator (ผ่าน/ไม่ผ่าน)
+
+work hours (ผ่าน/ไม่ผ่าน)
+
+break periods ไม่ซ้อน (ทดสอบเคสซ้อน/ไม่ซ้อน)
+
+pain points 1–3 (ทดสอบ <1 และ >3 ต้องไม่ผ่าน)
+
+บันทึกแล้วเรียก onSettingsChanged() 1 ครั้ง
+
+Widget – settings_page_test.dart
+
+Render แล้วค่าเดิมจาก DB แสดงในฟอร์ม
+
+เลือก interval + ตั้ง work hours + break periods แล้วปุ่ม Save enable
+
+ใส่ค่าผิด (เช่นช่วงเวลาซ้อน) → Save disabled หรือขึ้นข้อความ error
+
+กด Save → verify persist + trigger onSettingsChanged()
+
+6) Acceptance Criteria (Definition of Done)
+
+✅ เลือก pain points ได้ 1–3 เท่านั้น
+
+✅ เปลี่ยนค่าบน Settings แล้ว นัดถัดไปถูกอัปเดตทันที
+
+✅ ปิด–เปิดแอป ค่า settings ยังคงอยู่
+
+✅ flutter analyze และ flutter test -r expanded ผ่านทั้งหมด
+
+✅ แนบสกรีนผลเทสต์ + เดโมหน้า Settings ใน PR ชื่อ “Sprint 3 – SettingsPage”
+
+7) คำสั่งก่อน commit/PR
 flutter clean
 flutter pub get
 flutter pub run build_runner build --delete-conflicting-outputs
 flutter analyze
 flutter test -r expanded
 
-หลังส่ง PR (ระหว่างรอรีวิว) — เริ่ม Sprint 3: SettingsPage
-งานที่ต้องทำ
 
-สร้าง/อัปเดตหน้า SettingsPage ให้ครบตามสเปก:
-
-Toggle การแจ้งเตือน, ช่วงเวลาเริ่ม–จบ, interval, วันทำงาน (Mon–Fri ฯลฯ)
-
-Break periods (หลายช่วงเวลา)
-
-เสียง/สั่น, maxSnoozeCount
-
-เลือก pain points 1–3 จุด (มี validation)
-
-เปลี่ยนแปลงทุกค่า → ต้องเรียก NotificationController.onSettingsChanged() เพื่อคำนวณนัดถัดไปทันที
-
-Persist/โหลดค่าผ่าน IDatabaseService (ไม่แก้ schema)
-
-Acceptance Criteria
-
-เลือก pain points ได้ 1–3 เท่านั้น (ต่ำกว่า/เกิน → แจ้งเตือน/ปิดปุ่มบันทึก)
-
-บันทึกแล้วเปิดแอปใหม่ ค่าเดิมต้อง คงอยู่
-
-กด Test Notification บน HomePage หลังแก้ settings → นัดถัดไป อัปเดตทันที
-
-maxSnoozeCount มีผลกับ TodoPage (ปุ่ม Snooze disable เมื่อครบลิมิต)
-
-Tests ที่ต้องมี
-
-Unit: validation 1–3 จุด, บันทึก/อ่าน settings, เรียก onSettingsChanged() เมื่อค่าถูกแก้
-
-Widget: ฟอร์มกรอกครบ/ไม่ครบ, ปุ่ม Save enable/disable ตาม validation, persist แล้วกลับเข้าหน้าเดิมค่าต้องแสดงถูกต้อง
-
-สรุป:
-เดี๋ยวนี้ → เปิด PR ของ TodoPage ตาม template + แนบหลักฐานเทสต์/เดโม
-ถัดไป → เริ่มทำ SettingsPage ตามรายการด้านบน พร้อมเทสต์และเกณฑ์ผ่านชัดเจน
+มีอะไรติดขัด (โดยเฉพาะ validation overlap หรือการ trigger onSettingsChanged) ส่ง 3–5 บรรทัดแรกของ error มาได้เลย เดี๋ยวอากิเทคชี้จุดให้ทันทีครับ 💪
