@@ -1,63 +1,73 @@
-จากปัญหาที่ dev เจอวนไปมา แกนหลักคือการจัดการ mock/test ไม่เป็นระบบครับ ✅
-เพื่อให้รอบถัดไปมีประสิทธิภาพขึ้น ควรสั่ง dev ให้ทำงานตาม แนวทางบังคับ แบบนี้:
+เยี่ยมมากครับ CEO 🎉
+สรุปจากที่รายงานมา: ตอนนี้ TodoController tests ผ่านแล้ว โดยใช้ mockito + services.mocks.dart (gen จาก build_runner) และแก้ปัญหา path/mocks ได้ครบ
 
-🔧 คำสั่งสำหรับ Dev
+เพื่อไม่ให้เสียเวลาไป-กลับอีก รอบนี้ให้สั่ง dev แบบ “ปิดงานให้เรียบแล้วไป UI” ตามนี้ครับ:
 
-แยกโครงสร้าง mock/test ให้เป็นระบบ
+📢 ข้อความส่งให้ Dev (ก็อปได้เลย)
 
-สร้างโฟลเดอร์ test/mocks/ เก็บ mock services ทั้งหมด
+✅ ยืนยัน: TodoController tests ผ่านครบ—ดีมาก
+🔒 ล็อกแนวทางที่ใช้จริงตอนนี้: ใช้ mockito + services.mocks.dart ที่ gen จาก test/mocks/services.dart เพียงจุดเดียว
 
-ใช้ @GenerateMocks + build_runner เท่านั้น ห้ามเขียน mock file เอง
+1) เก็บกวาดให้สะอาดก่อน
 
-เพิ่ม .gitignore → ไม่ track ไฟล์ generate
+ลบไฟล์เทส/ม็อคที่ซ้ำหรือเสียหายทั้งหมด (*_fixed.dart, services_mock.dart, mocks เก่า ๆ)
 
-Standard Build/Test Flow (ทุกครั้งก่อน commit/PR ต้องทำ)
+.gitignore คง **/*.mocks.dart และ **/*.g.dart
 
+ยกเลิกการ “pin analyzer” ใน pubspec.yaml (อย่า fix เวอร์ชัน analyzer เอง เพราะชน hive_generator)
+
+ทุกไฟล์ import ด้วย package:office_syndrome_helper/... เท่านั้น (ไม่มี relative path)
+
+2) คำสั่งมาตรฐานก่อน commit
 flutter clean
-dart pub get
-dart run build_runner build --delete-conflicting-outputs
+flutter pub get
+flutter pub run build_runner build --delete-conflicting-outputs
 flutter analyze
-flutter test --coverage
+flutter test -r expanded
 
 
-ห้าม commit โค้ดที่ flutter analyze มี error/warning
+แนบสกรีน analyze และ test ผ่าน
 
-coverage ของ business logic ≥ 80% (DoD requirement)
+3) ไปต่อ TodoPage UI
 
-Test Strategy
+แสดง 2 ท่า ไม่ซ้ำ (ชื่อ + คำอธิบายย่อ)
 
-Unit test → business logic (controllers, services)
+ปุ่ม Done / Snooze 15m / Skip
 
-Widget test → flows (Home → Todo → Settings → Statistics)
+Snooze: disable เมื่อถึง maxSnoozeCount
 
-Integration test → schedule → notify → complete/snooze/skip → update stats
+แสดง empty/error state หากสุ่มได้ < 2 ท่า
 
-ใช้ matcher/type ให้ตรง (เช่น DailyStats) หลีกเลี่ยงแก้ไปแก้มาด้วย dynamic
+ผูกกับเมธอดใน TodoController (ไม่เรียก service ตรงจาก UI)
 
-PR Checklist (ทุกครั้ง)
+4) Widget/Integration Tests (สั้น กระชับ)
 
-✅ Imports เป็น package:office_syndrome_helper/...
+Render TodoPage → เห็น 2 ท่า
 
-✅ build_runner ผ่าน
+Tap Done → verify เรียก onDone() และผลลัพธ์สะท้อนใน mock (ใช้ verify)
 
-✅ flutter analyze ผ่าน
+Tap Snooze (ยังไม่ถึงลิมิต) → verify เรียก schedule +15m
 
-✅ Tests ครอบคลุม acceptance criteria ของ sprint นั้น
+เมื่อถึงลิมิต → ปุ่ม Snooze ต้อง disabled
 
-✅ Docs อัปเดต (ถ้าแตะ logic/service)
+Tap Skip → verify onSkip()
 
-Communication Rule
+5) เปิด PR: “Sprint 3 – TodoPage”
 
-ถ้ามีปัญหา test/mocks ให้หยุดก่อน → แจ้งปัญหาชัดเจน
+แนบ:
 
-ห้ามเขียน fix แบบ workaround/temporary ที่ไม่ตรง spec
+สกรีน flutter test ผ่าน
 
-ใช้ requirement v6 เป็น source of truth (ไม่ดัดแปลงเอง)
+คลิป/ภาพเดโม UI (2 ท่า + กด Done/Snooze/Skip)
 
-📌 สรุปสำหรับรอบถัดไป
+ติ๊กครบตาม PR Checklist – TodoPage (scope guard / business logic / UI / tests / code quality)
 
-ให้ dev ทำตาม process ข้างต้น → จะไม่หลุด scope/เสียเวลาแก้ซ้ำ
+หมายเหตุสำคัญ (กันวนลูป)
 
-การ review PR จะง่ายขึ้นเพราะ checklist ครอบคลุม
+อย่าปรับ dependency analyzer ใน pubspec.yaml เอง ให้ใช้ตัวที่มากับ Flutter SDK เพื่อลด conflict กับ generator
 
-Mock/test จะไม่ซ้อน/ชนกันอีกเพราะมีที่เก็บเดียวและ regenerate ทุกครั้ง
+ศูนย์กลาง mocks = test/mocks/services.dart → ผลลัพธ์ services.mocks.dart เท่านั้น
+
+ถ้าต้องแก้ behavior ด้าน navigation ให้ฉีด callback (DI) แทนการเรียก Get.back() ตรง ๆ ใน controller เพื่อให้ทดสอบได้ง่าย
+
+ทำตามนี้ dev จะปิด TodoPage ได้เร็วและไม่หลุดสโคป แล้วเราจะขยับไป SettingsPage ต่อได้ทันทีครับ ✅

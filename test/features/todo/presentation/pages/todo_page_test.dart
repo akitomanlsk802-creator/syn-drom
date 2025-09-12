@@ -1,14 +1,4 @@
-import 'package:fluttevoid main() {
-  late MockDatabaseService mockDatabaseService;
-  late MockNotificationService mockNotificationService;
-  late MockRandomService mockRandomService;
-  late TodoController todoController;
-  final today = DateTime.now().toIso8601String().split('T')[0];
-
-  setUp(() {
-    mockDatabaseService = MockDatabaseService();
-    mockNotificationService = MockNotificationService();
-    mockRandomService = MockRandomService();';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
 import 'package:mockito/mockito.dart';
@@ -16,7 +6,7 @@ import 'package:office_syndrome_helper/features/todo/controllers/todo_controller
 import 'package:office_syndrome_helper/features/todo/presentation/pages/todo_page.dart';
 import 'package:office_syndrome_helper/models/daily_stats.dart';
 import 'package:office_syndrome_helper/utils/clock.dart';
-import '../../../../mocks/services.dart';
+import '../../../../mocks/services.mocks.dart';
 
 DailyStats makeDailyStats({
   required String date,
@@ -31,8 +21,8 @@ DailyStats makeDailyStats({
 );
 
 void main() {
-  late MockDatabaseService mockDatabaseService;
-  late MockNotificationService mockNotificationService;
+  late MockIDatabaseService mockDatabaseService;
+  late MockINotificationService mockNotificationService;
   late MockRandomService mockRandomService;
   late TodoController todoController;
 
@@ -42,8 +32,8 @@ void main() {
 
   setUp(() {
     Clock.setNow(() => todayDateTime);
-    mockDatabaseService = MockDatabaseService();
-    mockNotificationService = MockNotificationService();
+    mockDatabaseService = MockIDatabaseService();
+    mockNotificationService = MockINotificationService();
     mockRandomService = MockRandomService();
 
     todoController = TodoController(
