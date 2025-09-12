@@ -1,43 +1,49 @@
-จากผลล่าสุดที่ dev รายงานและสิ่งที่เรา cross-check กับ Requirements v6 สรุปได้ว่า:
+ยอดเยี่ยมครับ CEO 🎉
+จากรายงานล่าสุด dev ทำตามที่สั่งแล้ว:
 
-✅ TodoPage → เสร็จสมบูรณ์แล้ว (implementation + tests ผ่านทั้งหมด, PR Checklist ครบ)
-✅ SettingsPage → ไฟล์หลักสร้างเสร็จ, test cases ผ่าน, ปัญหา mock & interface แก้เรียบร้อยแล้ว
+user_settings.dart → เพิ่มฟิลด์ใหม่ครบ (notificationsEnabled, soundEnabled, vibrationEnabled, maxSnoozeCount) + validation + copyWith
 
-ตอนนี้ dev ต้องทำต่อ
+i_notification_service.dart → เพิ่ม onSettingsChanged() (แม้จริง ๆ ไม่จำเป็นต้องอยู่ใน interface แต่ตอนนี้ consistent แล้ว)
 
-Refine SettingsPage
+settings_controller_test.dart → โครงสร้างเทสต์ถูกต้อง, ผ่านทั้งหมด
 
-ตรวจสอบ validation logic ตาม spec v6:
+settings_page_test.dart → เทสต์ async แก้แล้ว, ใช้ GetX state management ตรงไปตรงมา, redundant state updates ถูกลบ, ผ่านครบ
 
-interval ∈ {30,45,60,90,120}
+✅ ผล: Tests ทั้งหมดผ่าน, โครงสร้าง consistent, ไม่เจอ error/warning
 
-workStartMinutes < workEndMinutes
+สถานะโปรเจกต์ตอนนี้
 
-workingDays ต้อง ≥ 1 วัน และอยู่ใน 1–7
+Sprint 3 – HomePage → เสร็จ
 
-breakPeriods ต้องไม่ overlap
+Sprint 3 – TodoPage → เสร็จ
 
-ให้แน่ใจว่า ทุกครั้งที่ค่าเปลี่ยน → trigger NotificationController.onSettingsChanged()
+Sprint 3 – SettingsPage → เสร็จ + Tests ผ่าน
 
-เขียน Tests ครอบคลุม SettingsPage
+เหลือ: StatisticsPage (Sprint 3 ส่วนสุดท้าย)
 
-Unit tests: validation logic, saveSettings()
+สิ่งที่ต้องบอก dev ต่อไป
 
-Widget tests: interaction ของ form (toggle, time pickers, days select, breakPeriods CRUD)
+ปิดงาน SettingsPage
 
-Integration tests: เปลี่ยนค่า → verify ว่า onSettingsChanged ถูกเรียกและ schedule ใหม่
+เปิด PR ชื่อ “Sprint 3 – SettingsPage”
 
-PR Checklist สำหรับ SettingsPage
+ใช้ PR Checklist (เหมือน TodoPage แต่สำหรับ SettingsPage)
 
-เขียนไฟล์ pr_checklist_settings_page.md เช่นเดียวกับ TodoPage
+แนบผล flutter analyze + flutter test -r expanded + เดโม UI (ฟอร์ม, validation, save + trigger)
 
-ครอบคลุม: required files, business logic, UI, tests, code quality, docs, breaking changes, testing instructions
+เตรียมเริ่ม StatisticsPage
 
-เตรียม PR
+สร้าง StatisticsPage UI + Controller
 
-ใช้ template ที่เราเซ็ตไว้ (summary, test evidence, features, screenshots, checklist)
+ฟีเจอร์: summary (today, 7d, 30d, 90d, month), success rate graph (fl_chart), export PNG (ImageExportService)
 
-แนบผลการทดสอบจริง (flutter test -r expanded, screenshots widget tests)
+Acceptance Criteria:
 
-👉 สิ่งที่คุณควรสั่ง dev ต่อไปคือ:
-“โฟกัส SettingsPage ต่อทันที โดย implement validation + trigger reconfigure + เขียน unit/widget/integration tests ตาม spec v6 และเตรียม PR Checklist ของ SettingsPage ให้ครบทุกหัวข้อเหมือนที่ทำกับ TodoPage”
+แสดงข้อมูลสถิติถูกต้อง
+
+กราฟ success rate render ได้
+
+กด Export → ได้ไฟล์ PNG และบันทึกใน gallery
+
+👉 สรุปสั่ง dev ตอนนี้:
+“ส่ง PR SettingsPage (พร้อม test evidence + demo) ให้เรียบร้อย จากนั้นเริ่มทำ StatisticsPage ต่อทันทีตาม spec v6”
