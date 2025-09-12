@@ -1,27 +1,28 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mockito/annotations.dart';
 import 'package:mockito/mockito.dart';
 import 'package:office_syndrome_helper/models/user_settings.dart';
 import 'package:office_syndrome_helper/features/settings/controllers/settings_controller.dart';
-import 'package:office_syndrome_helper/services/contracts/database_service.dart';
-import 'package:office_syndrome_helper/services/notification_service.dart';
+import 'package:office_syndrome_helper/services/contracts/i_database_service.dart';
+import 'package:office_syndrome_helper/services/contracts/i_notification_service.dart';
 
-class MockDatabaseService extends Mock implements IDatabaseService {}
-class MockNotificationService extends Mock implements INotificationService {}
+@GenerateMocks([IDatabaseService, INotificationService])
+import 'settings_controller_test.mocks.dart';
 
 void main() {
   late SettingsController controller;
-  late MockDatabaseService mockDatabaseService;
-  late MockNotificationService mockNotificationService;
+  late MockIDatabaseService mockDatabaseService;
+  late MockINotificationService mockNotificationService;
   late UserSettings testSettings;
 
   setUp(() {
-    mockDatabaseService = MockDatabaseService();
-    mockNotificationService = MockNotificationService();
+    mockDatabaseService = MockIDatabaseService();
+    mockNotificationService = MockINotificationService();
     controller = SettingsController(
       databaseService: mockDatabaseService,
       notificationService: mockNotificationService,
     );
-    
+
     testSettings = UserSettings(
       workStartMinutes: 9 * 60,
       workEndMinutes: 17 * 60,
@@ -56,9 +57,18 @@ void main() {
     });
 
     test('rejects invalid work hours', () {
-      expect(controller.isValidWorkHours(17 * 60, 9 * 60), isFalse); // end before start
-      expect(controller.isValidWorkHours(-60, 17 * 60), isFalse); // negative start
-      expect(controller.isValidWorkHours(9 * 60, 25 * 60), isFalse); // end after 24h
+      expect(
+        controller.isValidWorkHours(17 * 60, 9 * 60),
+        isFalse,
+      ); // end before start
+      expect(
+        controller.isValidWorkHours(-60, 17 * 60),
+        isFalse,
+      ); // negative start
+      expect(
+        controller.isValidWorkHours(9 * 60, 25 * 60),
+        isFalse,
+      ); // end after 24h
     });
   });
 
@@ -85,7 +95,10 @@ void main() {
     test('accepts 1-3 pain points', () {
       expect(controller.isValidPainPoints(['neck']), isTrue);
       expect(controller.isValidPainPoints(['neck', 'back']), isTrue);
-      expect(controller.isValidPainPoints(['neck', 'back', 'shoulder']), isTrue);
+      expect(
+        controller.isValidPainPoints(['neck', 'back', 'shoulder']),
+        isTrue,
+      );
     });
 
     test('rejects empty or too many pain points', () {
@@ -99,15 +112,15 @@ void main() {
 
   group('Settings Save', () {
     test('saves valid settings and triggers notification update', () async {
-      when(mockDatabaseService.saveUserSettings(any))
-          .thenAnswer((_) async => true);
-      when(mockNotificationService.onSettingsChanged())
-          .thenAnswer((_) async {});
+      when(mockDatabaseService.saveSettings(any)).thenAnswer((_) async {});
+      when(
+        mockNotificationService.onSettingsChanged(),
+      ).thenAnswer((_) async => true);
 
       final success = await controller.saveSettings(testSettings);
 
       expect(success, isTrue);
-      verify(mockDatabaseService.saveUserSettings(testSettings)).called(1);
+      verify(mockDatabaseService.saveSettings(testSettings)).called(1);
       verify(mockNotificationService.onSettingsChanged()).called(1);
     });
 
@@ -117,8 +130,8 @@ void main() {
       final success = await controller.saveSettings(testSettings);
 
       expect(success, isFalse);
-      verifyNever(mockDatabaseService.saveUserSettings(any));
+      verifyNever(mockDatabaseService.saveSettings(any));
       verifyNever(mockNotificationService.onSettingsChanged());
     });
   });
-});
+}

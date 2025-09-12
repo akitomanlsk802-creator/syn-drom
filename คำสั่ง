@@ -1,118 +1,43 @@
-เยี่ยมมาก Dev ✅
-สรุปคำสั่งดำเนินการ “ตอนนี้” และลำดับทำงานสำหรับ Sprint 3 – SettingsPage (พร้อมนิยามผ่านงาน):
+จากผลล่าสุดที่ dev รายงานและสิ่งที่เรา cross-check กับ Requirements v6 สรุปได้ว่า:
 
-0) ปิดงาน TodoPage
+✅ TodoPage → เสร็จสมบูรณ์แล้ว (implementation + tests ผ่านทั้งหมด, PR Checklist ครบ)
+✅ SettingsPage → ไฟล์หลักสร้างเสร็จ, test cases ผ่าน, ปัญหา mock & interface แก้เรียบร้อยแล้ว
 
-เปิด PR ชื่อ “Sprint 3 – TodoPage” โดยใช้ pr_template_todo_page.md และติ๊กครบใน pr_checklist_todo_page.md.
+ตอนนี้ dev ต้องทำต่อ
 
-แนบสกรีน flutter analyze + flutter test -r expanded และเดโมกด Done/Snooze/Skip.
+Refine SettingsPage
 
-1) เริ่ม SettingsPage – โครงไฟล์
-lib/features/settings/
-  controllers/settings_controller.dart
-  presentation/pages/settings_page.dart
-  widgets/… (ถ้ามี)
-test/features/settings/
-  controllers/settings_controller_test.dart
-  presentation/settings_page_test.dart
+ตรวจสอบ validation logic ตาม spec v6:
 
+interval ∈ {30,45,60,90,120}
 
-ทุกไฟล์ import แบบ package:office_syndrome_helper/...
+workStartMinutes < workEndMinutes
 
-2) Interfaces ที่ต้องเรียก
+workingDays ต้อง ≥ 1 วัน และอยู่ใน 1–7
 
-IDatabaseService → load/save UserSettings
+breakPeriods ต้องไม่ overlap
 
-INotificationService/NotificationController → onSettingsChanged() หลังบันทึก
+ให้แน่ใจว่า ทุกครั้งที่ค่าเปลี่ยน → trigger NotificationController.onSettingsChanged()
 
-3) ฟอร์ม & กติกา (Validation)
+เขียน Tests ครอบคลุม SettingsPage
 
-Notification toggle: on/off
+Unit tests: validation logic, saveSettings()
 
-Interval: เลือกจาก {30, 45, 60, 90, 120} นาที → ค่าที่ไม่อยู่ในเซ็ต “ไม่ผ่าน”
+Widget tests: interaction ของ form (toggle, time pickers, days select, breakPeriods CRUD)
 
-Work hours: workStartMinutes < workEndMinutes
+Integration tests: เปลี่ยนค่า → verify ว่า onSettingsChanged ถูกเรียกและ schedule ใหม่
 
-Working days: อย่างน้อย 1 วัน
+PR Checklist สำหรับ SettingsPage
 
-Break periods:
+เขียนไฟล์ pr_checklist_settings_page.md เช่นเดียวกับ TodoPage
 
-รูปแบบ [startMinute, endMinute) ภายในวัน
+ครอบคลุม: required files, business logic, UI, tests, code quality, docs, breaking changes, testing instructions
 
-ห้ามซ้อนทับกัน (ตรวจด้วย interval overlap)
+เตรียม PR
 
-Sound/Vibration: boolean
+ใช้ template ที่เราเซ็ตไว้ (summary, test evidence, features, screenshots, checklist)
 
-Max snooze count: 0..N (ตั้งค่าตาม spec)
+แนบผลการทดสอบจริง (flutter test -r expanded, screenshots widget tests)
 
-Pain points: ต้องเลือก 1–3 (น้อย/มากกว่านี้ “ไม่ผ่าน”)
-
-ตัวอย่าง validator (ยกไปใช้ใน controller/test ได้):
-
-bool isValidInterval(int v) => const {30,45,60,90,120}.contains(v);
-
-bool isValidWorkHours(int start, int end) => start >= 0 && end <= 24*60 && start < end;
-
-bool hasOverlap(List<(int start,int end)> ps) {
-  final sorted = [...ps]..sort((a,b)=>a.$1.compareTo(b.$1));
-  for (var i=1;i<sorted.length;i++) {
-    if (sorted[i-1].$2 > sorted[i].$1) return true;
-  }
-  return false;
-}
-
-4) การทำงานเมื่อกด “บันทึก”
-
-ตรวจ form.validate() → ไม่ผ่านให้แสดง error state ชัดเจน (SnackBar/HelperText)
-
-Persist ผ่าน IDatabaseService.upsertUserSettings(...)
-
-เรียก NotificationController.onSettingsChanged() ทันที
-
-แสดงผลสำเร็จ และ Navigator.pop() (ในเทสต์ mock callback/DI ได้)
-
-5) Tests (ต้องมี)
-
-Unit – settings_controller_test.dart
-
-interval validator (ผ่าน/ไม่ผ่าน)
-
-work hours (ผ่าน/ไม่ผ่าน)
-
-break periods ไม่ซ้อน (ทดสอบเคสซ้อน/ไม่ซ้อน)
-
-pain points 1–3 (ทดสอบ <1 และ >3 ต้องไม่ผ่าน)
-
-บันทึกแล้วเรียก onSettingsChanged() 1 ครั้ง
-
-Widget – settings_page_test.dart
-
-Render แล้วค่าเดิมจาก DB แสดงในฟอร์ม
-
-เลือก interval + ตั้ง work hours + break periods แล้วปุ่ม Save enable
-
-ใส่ค่าผิด (เช่นช่วงเวลาซ้อน) → Save disabled หรือขึ้นข้อความ error
-
-กด Save → verify persist + trigger onSettingsChanged()
-
-6) Acceptance Criteria (Definition of Done)
-
-✅ เลือก pain points ได้ 1–3 เท่านั้น
-
-✅ เปลี่ยนค่าบน Settings แล้ว นัดถัดไปถูกอัปเดตทันที
-
-✅ ปิด–เปิดแอป ค่า settings ยังคงอยู่
-
-✅ flutter analyze และ flutter test -r expanded ผ่านทั้งหมด
-
-✅ แนบสกรีนผลเทสต์ + เดโมหน้า Settings ใน PR ชื่อ “Sprint 3 – SettingsPage”
-
-7) คำสั่งก่อน commit/PR
-flutter clean
-flutter pub get
-flutter pub run build_runner build --delete-conflicting-outputs
-flutter analyze
-flutter test -r expanded
-
-
-มีอะไรติดขัด (โดยเฉพาะ validation overlap หรือการ trigger onSettingsChanged) ส่ง 3–5 บรรทัดแรกของ error มาได้เลย เดี๋ยวอากิเทคชี้จุดให้ทันทีครับ 💪
+👉 สิ่งที่คุณควรสั่ง dev ต่อไปคือ:
+“โฟกัส SettingsPage ต่อทันที โดย implement validation + trigger reconfigure + เขียน unit/widget/integration tests ตาม spec v6 และเตรียม PR Checklist ของ SettingsPage ให้ครบทุกหัวข้อเหมือนที่ทำกับ TodoPage”

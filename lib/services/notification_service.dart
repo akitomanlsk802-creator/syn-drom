@@ -96,4 +96,11 @@ class NotificationService implements INotificationService {
     // For now return null as it's not critical for the core functionality
     return null;
   }
+
+  @override
+  Future<void> onSettingsChanged() async {
+    await cancelAll();
+    // TODO: Reschedule notifications based on new settings
+    // This will be implemented by notification controller
+  }
 }

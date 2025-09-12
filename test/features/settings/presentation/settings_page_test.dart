@@ -1,26 +1,27 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
+import 'package:mockito/annotations.dart';
 import 'package:mockito/mockito.dart';
 import 'package:office_syndrome_helper/models/user_settings.dart';
 import 'package:office_syndrome_helper/features/settings/controllers/settings_controller.dart';
 import 'package:office_syndrome_helper/features/settings/presentation/pages/settings_page.dart';
-import 'package:office_syndrome_helper/services/contracts/database_service.dart';
-import 'package:office_syndrome_helper/services/notification_service.dart';
+import 'package:office_syndrome_helper/services/contracts/i_database_service.dart';
+import 'package:office_syndrome_helper/services/contracts/i_notification_service.dart';
 
-class MockDatabaseService extends Mock implements IDatabaseService {}
-class MockNotificationService extends Mock implements INotificationService {}
+@GenerateMocks([IDatabaseService, INotificationService])
+import 'settings_page_test.mocks.dart';
 
 void main() {
   late SettingsController controller;
-  late MockDatabaseService mockDatabaseService;
-  late MockNotificationService mockNotificationService;
+  late MockIDatabaseService mockDatabaseService;
+  late MockINotificationService mockNotificationService;
   late UserSettings testSettings;
 
   setUp(() {
-    mockDatabaseService = MockDatabaseService();
-    mockNotificationService = MockNotificationService();
-    
+    mockDatabaseService = MockIDatabaseService();
+    mockNotificationService = MockINotificationService();
+
     testSettings = UserSettings(
       workStartMinutes: 9 * 60,
       workEndMinutes: 17 * 60,
@@ -29,8 +30,8 @@ void main() {
       selectedPainPoints: ['neck'],
     );
 
-    when(mockDatabaseService.getUserSettings())
-        .thenAnswer((_) async => testSettings);
+    // Initial null state
+    when(mockDatabaseService.getSettings()).thenAnswer((_) async => null);
 
     controller = SettingsController(
       databaseService: mockDatabaseService,
@@ -45,15 +46,21 @@ void main() {
   });
 
   testWidgets('SettingsPage loads existing settings', (tester) async {
-    await tester.pumpWidget(
-      const GetMaterialApp(home: SettingsPage()),
-    );
+    await tester.pumpWidget(const GetMaterialApp(home: SettingsPage()));
+    await tester.pump();
 
     // Initial loading indicator
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
 
+    // Update mock to return settings
+    when(
+      mockDatabaseService.getSettings(),
+    ).thenAnswer((_) async => testSettings);
+    controller.update();
+
     // Let settings load
-    await tester.pumpAndSettle();
+    controller.settings.value = testSettings;
+    await tester.pump();
 
     // Verify initial values
     expect(find.text('09:00'), findsOneWidget); // Work start time
@@ -62,17 +69,19 @@ void main() {
   });
 
   testWidgets('SettingsPage shows validation errors', (tester) async {
-    await tester.pumpWidget(
-      const GetMaterialApp(home: SettingsPage()),
-    );
-    await tester.pumpAndSettle();
+    await tester.pumpWidget(const GetMaterialApp(home: SettingsPage()));
+    await tester.pump();
+
+    // Load settings
+    controller.settings.value = testSettings;
+    await tester.pump();
 
     // Try to save invalid work hours
     await tester.enterText(
       find.widgetWithText(TextFormField, 'เวลาเริ่มงาน'),
       '18:00', // Start after end
     );
-    
+
     await tester.tap(find.text('บันทึก'));
     await tester.pumpAndSettle();
 
@@ -81,28 +90,30 @@ void main() {
   });
 
   testWidgets('SettingsPage saves valid settings', (tester) async {
-    when(mockDatabaseService.saveUserSettings(any))
-        .thenAnswer((_) async => true);
-    when(mockNotificationService.onSettingsChanged())
-        .thenAnswer((_) async {});
+    when(mockDatabaseService.saveSettings(any)).thenAnswer((_) async {});
+    when(
+      mockNotificationService.onSettingsChanged(),
+    ).thenAnswer((_) async => true);
 
-    await tester.pumpWidget(
-      const GetMaterialApp(home: SettingsPage()),
-    );
-    await tester.pumpAndSettle();
+    await tester.pumpWidget(const GetMaterialApp(home: SettingsPage()));
+    await tester.pump();
+
+    // Load settings
+    controller.settings.value = testSettings;
+    await tester.pump();
 
     // Change interval
     await tester.tap(find.text('1 ชั่วโมง'));
-    await tester.pumpAndSettle();
+    await tester.pump();
     await tester.tap(find.text('30 นาที'));
-    await tester.pumpAndSettle();
+    await tester.pump();
 
     // Save
     await tester.tap(find.text('บันทึก'));
-    await tester.pumpAndSettle();
+    await tester.pump();
 
     // Verify save and notification update
-    verify(mockDatabaseService.saveUserSettings(any)).called(1);
+    verify(mockDatabaseService.saveSettings(any)).called(1);
     verify(mockNotificationService.onSettingsChanged()).called(1);
   });
-});
+}

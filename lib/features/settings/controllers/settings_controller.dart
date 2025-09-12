@@ -3,8 +3,8 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:office_syndrome_helper/models/user_settings.dart';
-import 'package:office_syndrome_helper/services/contracts/database_service.dart';
-import 'package:office_syndrome_helper/services/notification_service.dart';
+import 'package:office_syndrome_helper/services/contracts/i_database_service.dart';
+import 'package:office_syndrome_helper/services/contracts/i_notification_service.dart';
 
 class SettingsController extends GetxController {
   final IDatabaseService _databaseService;
@@ -27,7 +27,7 @@ class SettingsController extends GetxController {
   }
 
   Future<void> _loadSettings() async {
-    settings.value = await _databaseService.getUserSettings();
+    settings.value = await _databaseService.getSettings();
     update();
   }
 
@@ -64,7 +64,7 @@ class SettingsController extends GetxController {
       if (!isValidPainPoints(newSettings.selectedPainPoints)) return false;
 
       // Save
-      await _databaseService.saveUserSettings(newSettings);
+      await _databaseService.saveSettings(newSettings);
       settings.value = newSettings;
 
       // Trigger notification reconfiguration
