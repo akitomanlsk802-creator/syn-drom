@@ -47,7 +47,7 @@ class SettingsController extends GetxController {
   }
 
   bool isValidPainPoints(List<String> painPoints) =>
-      painPoints.length >= 1 && painPoints.length <= 3;
+      painPoints.isNotEmpty && painPoints.length <= 3;
 
   Future<bool> saveSettings(UserSettings newSettings) async {
     try {

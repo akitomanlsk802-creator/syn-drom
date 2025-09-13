@@ -40,7 +40,7 @@ class SettingsPage extends GetView<SettingsController> {
                 decoration: const InputDecoration(
                   labelText: 'ระยะห่างการแจ้งเตือน',
                 ),
-                value: settings.intervalMinutes,
+                initialValue: settings.intervalMinutes,
                 items: const [
                   DropdownMenuItem(value: 30, child: Text('30 นาที')),
                   DropdownMenuItem(value: 45, child: Text('45 นาที')),
@@ -69,15 +69,13 @@ class SettingsPage extends GetView<SettingsController> {
                         labelText: 'เวลาเริ่มงาน',
                       ),
                       initialValue:
-                          (settings.workStartMinutes ~/ 60).toString().padLeft(
+                          '${(settings.workStartMinutes ~/ 60).toString().padLeft(
                             2,
                             '0',
-                          ) +
-                          ':' +
-                          (settings.workStartMinutes % 60).toString().padLeft(
+                          )}:${(settings.workStartMinutes % 60).toString().padLeft(
                             2,
                             '0',
-                          ),
+                          )}',
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'โปรดระบุเวลาเริ่มงาน';
@@ -112,15 +110,13 @@ class SettingsPage extends GetView<SettingsController> {
                         labelText: 'เวลาเลิกงาน',
                       ),
                       initialValue:
-                          (settings.workEndMinutes ~/ 60).toString().padLeft(
+                          '${(settings.workEndMinutes ~/ 60).toString().padLeft(
                             2,
                             '0',
-                          ) +
-                          ':' +
-                          (settings.workEndMinutes % 60).toString().padLeft(
+                          )}:${(settings.workEndMinutes % 60).toString().padLeft(
                             2,
                             '0',
-                          ),
+                          )}',
                       validator: (value) {
                         if (value == null || value.isEmpty) {
                           return 'โปรดระบุเวลาเลิกงาน';
@@ -203,8 +199,9 @@ class SettingsPage extends GetView<SettingsController> {
                 validator: (value) {
                   if (value == null || value.isEmpty) return 'โปรดระบุจำนวน';
                   final count = int.tryParse(value);
-                  if (count == null || count < 0)
+                  if (count == null || count < 0) {
                     return 'ต้องเป็นจำนวนเต็มไม่ติดลบ';
+                  }
                   settings.maxSnoozeCount = count;
                   return null;
                 },
