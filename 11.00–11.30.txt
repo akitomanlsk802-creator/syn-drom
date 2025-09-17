@@ -1,0 +1,155 @@
+จัดช่วง 11:00–11:30: ทำฐานข้อมูลให้ “พร้อมใช้งานจริง” — เปิด Hive แบบเข้ารหัส, กล่อง/คีย์ครบ, register adapters ตามสคีมา (minutes-only, BreakPeriod เก็บเป็น Map) และบูตใน main() ทันที (อ้างอิงข้อกำหนด v6 ในเอกสารของคุณ)
+
+สร้าง/อัปเดตไฟล์ (ก็อปวางได้เลย)
+1) lib/services/database_service.dart
+// FILE: lib/services/database_service.dart
+import 'dart:math';
+import 'dart:typed_data';
+import 'dart:convert';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import 'package:your_package_name/models/user_settings.dart';
+import 'package:your_package_name/models/notification_session.dart';
+import 'package:your_package_name/models/daily_stats.dart';
+
+/// กล่องข้อมูล (เข้ารหัสทุกกล่อง)
+/// - settings     : 1 แถว UserSettings (key = 'user_settings')
+/// - sessions     : NotificationSession หลายแถว
+/// - daily_stats  : DailyStats 1 แถว/วัน  (key = YYYY-MM-DD)
+///
+/// หมายเหตุสำคัญตามสเปก:
+/// - อย่าเก็บ TimeOfDay ลง Hive → เก็บ “นาทีตั้งแต่ 00:00” (int)
+/// - BreakPeriod เก็บเป็น List<Map<String,dynamic>> ใน UserSettings.breakPeriods
+class DatabaseService {
+  static const _settingsBox = 'settings';
+  static const _sessionsBox = 'sessions';
+  static const _dailyBox    = 'daily_stats';
+
+  static Box<UserSettings>? _settings;
+  static Box<NotificationSession>? _sessions;
+  static Box<DailyStats>? _daily;
+
+  static Future<void> initialize() async {
+    await Hive.initFlutter();
+
+    // Register adapters (typeId ต้องตรงกับสคีมา)
+    Hive.registerAdapter(UserSettingsAdapter());        // typeId: 0
+    Hive.registerAdapter(NotificationSessionAdapter()); // typeId: 1
+    Hive.registerAdapter(DailyStatsAdapter());          // typeId: 3
+    Hive.registerAdapter(SessionStatusAdapter());       // enum typeId: 10
+
+    // สร้าง/อ่านกุญแจ 32 bytes จาก secure storage (เก็บเป็น base64)
+    final storage = const FlutterSecureStorage();
+    String? b64 = await storage.read(key: 'hive_key_b64');
+    late Uint8List key;
+    if (b64 == null) {
+      key = _randomBytes(32);
+      await storage.write(key: 'hive_key_b64', value: base64Encode(key));
+    } else {
+      key = base64Decode(b64);
+    }
+    final cipher = HiveAesCipher(key);
+
+    _settings = await Hive.openBox<UserSettings>(_settingsBox, encryptionCipher: cipher);
+    _sessions = await Hive.openBox<NotificationSession>(_sessionsBox, encryptionCipher: cipher);
+    _daily    = await Hive.openBox<DailyStats>(_dailyBox, encryptionCipher: cipher);
+  }
+
+  static Uint8List _randomBytes(int n) {
+    final r = Random.secure();
+    return Uint8List.fromList(List<int>.generate(n, (_) => r.nextInt(256)));
+  }
+
+  // ---------- SETTINGS ----------
+  static Future<UserSettings> loadOrCreateDefaults() async {
+    final s = _settings!.get('user_settings');
+    if (s != null) return s;
+    final def = UserSettings.defaults(); // minutes + breakPeriods: List<Map>
+    await _settings!.put('user_settings', def);
+    return def;
+  }
+
+  static Future<UserSettings> loadSettings() async {
+    return _settings!.get('user_settings') ?? UserSettings.defaults();
+  }
+
+  static Future<void> saveSettings(UserSettings settings) async {
+    await _settings!.put('user_settings', settings);
+  }
+
+  // ---------- SESSIONS ----------
+  static Box<NotificationSession> get sessions => _sessions!;
+
+  // ---------- DAILY STATS ----------
+  static String _dateKey(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2,'0')}-${d.day.toString().padLeft(2,'0')}';
+
+  static Future<DailyStats?> getDailyStats(DateTime date) async {
+    return _daily!.get(_dateKey(date));
+  }
+
+  static Future<void> saveDailyStats(DailyStats s) async {
+    await _daily!.put(_dateKey(s.date), s);
+  }
+
+  static Future<List<DailyStats>> getStatsRange(DateTime start, int days) async {
+    final out = <DailyStats>[];
+    for (var i = 0; i < days; i++) {
+      final d = DateTime(start.year, start.month, start.day).add(Duration(days: i));
+      out.add(await getDailyStats(d) ?? DailyStats.empty(d));
+    }
+    return out;
+  }
+}
+
+
+เหตุผลและข้อกำหนดที่ยึดตามไฟล์สเปก: ใช้ Hive เข้ารหัสทุกกล่อง, สงวน TypeID เดิม, เวลาเก็บเป็น “นาที”, BreakPeriod เป็น Map ใน UserSettings, และกล่อง settings/sessions/daily_stats ตามนี้
+
+2) บูตฐานข้อมูลใน main() (เรียกครั้งเดียวก่อนใช้งาน)
+
+อัปเดต lib/main.dart ของคุณให้ init DB ตั้งแต่เริ่ม (ภายหลังคุณจะ init Notifications/WorkManager ต่อ)
+
+// FILE: lib/main.dart
+import 'package:flutter/material.dart';
+import 'package:your_package_name/services/database_service.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await DatabaseService.initialize();               // ✅ เปิด Hive แบบเข้ารหัส
+  await DatabaseService.loadOrCreateDefaults();     // ✅ สร้างค่าเริ่มต้นตามสคีมา v6
+  runApp(const App());
+}
+
+class App extends StatelessWidget {
+  const App({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Office Syndrome Helper',
+      theme: ThemeData(useMaterial3: true, colorSchemeSeed: const Color(0xFF2196F3)),
+      home: const Scaffold(
+        body: Center(child: Text('DB ready — ไปต่อ Notification/WorkManager ได้เลย')),
+      ),
+    );
+  }
+}
+
+3) คำสั่งที่ต้องรัน (ครั้งแรก)
+# gen adapters ของ Hive (จากไฟล์ models ที่ทำในช่วง 10:00–10:50)
+flutter pub run build_runner build -d
+
+# ลองรันแอปให้ชัวร์ว่า DB บูตครบ
+flutter run
+
+4) เช็กลิสต์ “ย้ายจากโปรเจ็กต์เก่า” ที่เกี่ยวกับฐานข้อมูล (ทำตอนนี้ได้เลย)
+
+ ลบ/งดใช้ BreakPeriodAdapter เดิม (เราเก็บเป็น Map แล้ว) + flutter clean && flutter pub get
+
+ แปลงฟิลด์เวลาเก่า → int นาทีตั้งแต่ 00:00 ในทุก model/service
+
+ ตรวจ TypeID ให้ตรง: UserSettings(0), NotificationSession(1), DailyStats(3), SessionStatus(10)
+
+ เปิดกล่องสามชุดด้วย HiveAesCipher(32 bytes) จาก flutter_secure_storage (ทำแล้วใน DatabaseService.initialize())
+
+เสร็จบล็อกนี้ ฐานข้อมูล “พร้อมใช้งานจริง” และปลอดภัยตามข้อกำหนด — บล็อกถัดไปเราจะลง Notifications (FLN 19 + Asia/Bangkok) และ WorkManager 0.9.x เพื่อให้แจ้งเตือน/พื้นหลังทำงานครบภายในวันนี้ครับ (บอกว่า “11:30–12:15” แล้วไปต่อได้เลย).
