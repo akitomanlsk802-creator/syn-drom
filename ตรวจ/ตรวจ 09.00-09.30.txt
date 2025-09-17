@@ -1,0 +1,138 @@
+สิ่งที่อยากดูจากช่วง 09:00–09:30 (ไฟล์/เอาต์พุต/สภาพแวดล้อม)
+
+โครงโปรเจกต์จริง
+
+เอาแค่ระดับบน + โฟลเดอร์ android และ lib พอ
+
+Windows (PowerShell):
+
+tree /F /A
+
+
+pubspec.yaml (เต็มไฟล์)
+
+Gradle/Android config
+
+android/build.gradle (project)
+
+android/app/build.gradle (module)
+
+android/gradle.properties
+
+android/app/src/main/AndroidManifest.xml
+
+จุดสตาร์ทแอป & DB init
+
+lib/main.dart (เวอร์ชันที่เรียก DatabaseService.initialize() แล้ว)
+
+lib/services/database_service.dart (เต็มไฟล์)
+
+เวอร์ชันเครื่องมือจริงที่ใช้
+
+flutter --version
+flutter doctor -v
+java -version
+
+
+ผลติดตั้งแพ็กเกจ
+
+flutter pub get
+
+
+(ขอเอาต์พุตตั้งแต่บรรทัดที่เริ่มดึงแพ็กเกจจนจบ)
+
+ผล generate adapters (Hive)
+
+flutter pub run build_runner build -d
+
+
+(ขอเฉพาะ warning/error ถ้ามี)
+
+ผลรันแอปครั้งแรก
+
+flutter run
+
+
+ขอ “ส่วนที่เป็น error/warning สีแดง” ทั้งหมด + 30–50 บรรทัดก่อนหน้า error แรก
+
+อุปกรณ์ทดสอบ
+
+Emulator/Device ที่ใช้ (ยี่ห้อ/รุ่น)
+
+Android เวอร์ชัน + API level
+
+adb shell getprop ro.build.version.release
+adb shell getprop ro.build.version.sdk
+
+
+อาการ/ปัญหาที่เจอ & วิธีที่ลองไปแล้ว
+
+สรุปสั้น ๆ เป็นหัวข้อ: เกิดที่ขั้นไหน, ข้อความ error, เคยลองแก้อะไรไปแล้วบ้าง
+
+ฟอร์มสั้น (ก็อปไปเติม แล้วส่งกลับ)
+[PROJECT TREE]
+(วางผล tree /F /A)
+
+[PUBSPEC.YAML]
+(วางไฟล์เต็ม)
+
+[ANDROID CONFIG]
+android/build.gradle:
+(วางไฟล์)
+android/app/build.gradle:
+(วางไฟล์)
+android/gradle.properties:
+(วางไฟล์)
+AndroidManifest.xml:
+(วางไฟล์)
+
+[MAIN & DB]
+lib/main.dart:
+(วางไฟล์)
+lib/services/database_service.dart:
+(วางไฟล์)
+
+[TOOL VERSIONS]
+flutter --version:
+(ผลลัพธ์)
+flutter doctor -v:
+(ผลลัพธ์)
+java -version:
+(ผลลัพธ์)
+
+[DEP GET]
+flutter pub get:
+(ผลลัพธ์ช่วงสำคัญ)
+
+[BUILD RUNNER]
+flutter pub run build_runner build -d:
+(ผลลัพธ์ช่วงสำคัญ)
+
+[RUN LOG]
+flutter run:
+(เฉพาะส่วน error/warning + ก่อนหน้า 30–50 บรรทัด)
+
+[DEVICE]
+รุ่น/Emu:
+Android release:
+API level:
+
+[ISSUES & FIXES TRIED]
+- ปัญหา:
+- เกิดตอน:
+- ข้อความ error:
+- วิธีที่ลองแก้:
+
+เกณฑ์เช็คว่า “09:00–09:30” ผ่านพร้อมไป 10:00–10:50
+
+compileSdk=36, targetSdk=36, minSdk=26 ถูกต้อง
+
+coreLibraryDesugaringEnabled true + desugar_jdk_libs:2.1.4 ใส่แล้ว
+
+kotlinOptions.jvmTarget=17 และ Gradle ใช้ Java 17 จริง (จาก flutter doctor -v / java -version)
+
+Manifest มี POST_NOTIFICATIONS, VIBRATE, WAKE_LOCK, RECEIVE_BOOT_COMPLETED
+
+แอปรันขึ้นได้ (แม้ยังเป็นหน้า placeholder) ไม่มี error build/manifest
+
+build_runner build -d ผ่าน (ไม่มี error adapters เก่า)

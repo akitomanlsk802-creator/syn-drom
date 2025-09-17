@@ -1,0 +1,578 @@
+จัดช่วง 13:00–14:00 ให้ใช้งานได้จริง: เพิ่ม หน้า Home (countdown + ปุ่มทดสอบแจ้งเตือน/รี-schedule), หน้า Settings (เปิด/ปิดแจ้งเตือน, เสียง/สั่น, interval, เวลาเริ่ม/สิ้นสุด, วันทำงาน, ช่วงพัก) และ คอนโทรลเลอร์หลัก ที่คำนวณเวลานัดถัดไปแบบ “ข้ามช่วงนอกเวลางาน/วันหยุด/ช่วงพัก” พร้อมเชื่อมกับ NotificationService / DatabaseService. ก็อปไฟล์ด้านล่างใส่โปรเจกต์คุณได้ทันที (อิงโครงที่เราสร้างมาก่อนหน้า)
+
+หมายเหตุสั้นๆ
+
+ใช้ GetX → GetMaterialApp + routes
+
+ทุก import ใช้ relative path เพื่อเลี่ยงชื่อแพ็กเกจไม่ตรง
+
+ฟังก์ชัน calculateNextNotificationTime() กระโดดข้าม boundary และ break อย่างรวดเร็ว (ไม่ไล่เพิ่มทีละนาที)
+
+0) อัปเดต lib/main.dart (บูต Services + Routes)
+// FILE: lib/main.dart
+import 'package:flutter/material.dart';
+import 'package:get/get.dart';
+
+import 'services/database_service.dart';
+import 'services/notification_service.dart';
+import 'services/background_scheduler.dart';
+import 'services/permission_service.dart';
+import 'controllers/notification_controller.dart';
+import 'app/routes/app_pages.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // DB (Hive+Encryption)
+  await DatabaseService.initialize();
+  await DatabaseService.loadOrCreateDefaults();
+
+  // Notifications + Permission + Background
+  await NotificationService.initialize();
+  await PermissionService.ensureNotificationPermissionOnce();
+  await BackgroundScheduler.ensureRegistered();
+
+  // DI: NotificationController
+  Get.put(NotificationController());
+
+  runApp(const App());
+}
+
+class App extends StatelessWidget {
+  const App({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return GetMaterialApp(
+      title: 'Office Syndrome Helper',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(useMaterial3: true, colorSchemeSeed: const Color(0xFF2196F3)),
+      initialRoute: AppPages.initial,
+      getPages: AppPages.routes,
+    );
+  }
+}
+
+1) Routes
+// FILE: lib/app/routes/app_routes.dart
+abstract class Routes {
+  static const splash = '/';
+  static const home = '/home';
+  static const settings = '/settings';
+}
+
+// FILE: lib/app/routes/app_pages.dart
+import 'package:get/get.dart';
+import '../../pages/home/home_page.dart';
+import '../../pages/settings/settings_page.dart';
+import 'app_routes.dart';
+
+class AppPages {
+  static const initial = Routes.home;
+  static final routes = <GetPage>[
+    GetPage(name: Routes.home, page: () => const HomePage()),
+    GetPage(name: Routes.settings, page: () => const SettingsPage()),
+  ];
+}
+
+2) Utils (วันทำงาน/นาที/ช่วยคำนวณ)
+// FILE: lib/utils/constants.dart
+const kWorkingDaysAll = [1, 2, 3, 4, 5, 6, 7]; // 1=Mon ... 7=Sun
+const kIntervals = [30, 45, 60, 90, 120];
+
+// FILE: lib/utils/date_utils.dart
+import 'package:flutter/material.dart';
+
+int toMinutes(TimeOfDay t) => t.hour * 60 + t.minute;
+TimeOfDay toTimeOfDay(int minutes) =>
+    TimeOfDay(hour: (minutes ~/ 60) % 24, minute: minutes % 60);
+
+DateTime normalizeToMidnight(DateTime d) => DateTime(d.year, d.month, d.day);
+int nowMinutesLocal() {
+  final n = DateTime.now();
+  return n.hour * 60 + n.minute;
+}
+int weekday1to7(DateTime d) => d.weekday; // already 1..7 in Dart
+
+3) Controllers
+3.1 NotificationController (คำนวณเวลาถัดไป + schedule/cancel)
+// FILE: lib/controllers/notification_controller.dart
+import 'dart:math';
+import 'package:get/get.dart';
+import '../services/database_service.dart';
+import '../services/notification_service.dart';
+import '../utils/date_utils.dart';
+import '../models/user_settings.dart';
+
+class NotificationController extends GetxController {
+  final nextTime = Rxn<DateTime>();
+  final countdownText = '—'.obs;
+
+  /// คำนวณเวลานัดถัดไปแบบ “กระโดด boundary”
+  /// - ถ้านอกเวลางาน → กระโดดไปจุดเริ่มวันทำงานถัดไป
+  /// - ถ้าทับช่วงพัก → กระโดดไป endMinutes ของช่วงพักนั้น
+  /// - ถ้าเกินเวลางาน → กระโดดไปวันทำงานถัดไปที่ startMinutes
+  DateTime calculateNextNotificationTime({DateTime? base}) {
+    final now = DateTime.now();
+    final s = DatabaseService._settings!.get('user_settings') ?? UserSettings.defaults();
+    final int interval = s.notificationIntervalMinutes;
+
+    // กำหนดฐานเริ่ม: ใช้ lastNotificationTime ถ้ามี, ไม่งั้นตอนนี้
+    DateTime t = (base ?? s.lastNotificationTime ?? now);
+
+    // เริ่มจาก candidate = ล่าสุด + interval
+    t = t.add(Duration(minutes: interval));
+
+    // loop กระโดดจน valid
+    for (int hop = 0; hop < 64; hop++) {
+      final w = weekday1to7(t);
+      if (!s.workingDays.contains(w)) {
+        // ไปวันทำงานถัดไป 09:00 (workStart)
+        t = _jumpToNextWorkingDayStart(t, s);
+        continue;
+      }
+      final m = t.hour * 60 + t.minute;
+      if (m < s.workStartMinutes) {
+        t = DateTime(t.year, t.month, t.day)
+            .add(Duration(minutes: s.workStartMinutes));
+        continue;
+      }
+      if (m >= s.workEndMinutes) {
+        t = _jumpToNextWorkingDayStart(t, s);
+        continue;
+      }
+      // กระโดดข้ามช่วงพัก (ถ้าตกในช่วงพัก)
+      final b = _findBreakIfInside(t, s);
+      if (b != null) {
+        final end = (b['endMinutes'] as int?) ?? s.workEndMinutes;
+        t = DateTime(t.year, t.month, t.day).add(Duration(minutes: end));
+        continue;
+      }
+      // ผ่านทุกเงื่อนไข → valid
+      return t;
+    }
+    // fallback: ถ้ามีอะไรผิด ให้เป็น start ของวันทำงานถัดไป
+    return _jumpToNextWorkingDayStart(now, s);
+  }
+
+  Future<void> rescheduleNext() async {
+    final s = await DatabaseService.loadSettings();
+    if (!s.notificationEnabled) {
+      await NotificationService.cancelAll();
+      nextTime.value = null;
+      return;
+    }
+    final nt = calculateNextNotificationTime(
+      base: s.lastNotificationTime ?? DateTime.now(),
+    );
+    nextTime.value = nt;
+    await NotificationService.cancelAll();
+    await NotificationService.scheduleAt(
+      nt,
+      id: 1001,
+      title: 'ถึงเวลายืดเหยียดแล้ว',
+      body: 'กดเพื่อเริ่มท่าออกกำลังกายสั้น ๆ',
+      playSound: s.soundEnabled,
+      vibration: s.vibrationEnabled,
+    );
+    s.lastNotificationTime = DateTime.now();
+    await DatabaseService.saveSettings(s);
+  }
+
+  // --- Helpers ---
+  DateTime _jumpToNextWorkingDayStart(DateTime t, UserSettings s) {
+    for (int i = 1; i <= 8; i++) {
+      final d = t.add(Duration(days: i));
+      if (s.workingDays.contains(weekday1to7(d))) {
+        return DateTime(d.year, d.month, d.day).add(
+          Duration(minutes: s.workStartMinutes),
+        );
+      }
+    }
+    // ถ้าไม่เจอเลย (ไม่น่ามี) กลับวันนี้ start
+    return DateTime(t.year, t.month, t.day)
+        .add(Duration(minutes: s.workStartMinutes));
+  }
+
+  Map<String, dynamic>? _findBreakIfInside(DateTime t, UserSettings s) {
+    final w = weekday1to7(t);
+    final m = t.hour * 60 + t.minute;
+    for (final bp in s.breakPeriods) {
+      final days = (bp['enabledDays'] as List?)?.cast<int>() ?? <int>[];
+      if (days.isNotEmpty && !days.contains(w)) continue;
+      final start = bp['startMinutes'] as int? ?? -1;
+      final end = bp['endMinutes'] as int? ?? -1;
+      if (start >= 0 && end > start && m >= start && m < end) {
+        return bp;
+      }
+    }
+    return null;
+  }
+
+  // อัปเดตข้อความ countdown ให้หน้า Home
+  void tickCountdown() {
+    final nt = nextTime.value;
+    if (nt == null) {
+      countdownText.value = 'ปิดการแจ้งเตือน';
+      return;
+    }
+    final diff = nt.difference(DateTime.now());
+    if (diff.isNegative) {
+      countdownText.value = 'กำลังถึงเวลา…';
+      return;
+    }
+    final h = diff.inHours;
+    final m = diff.inMinutes % 60;
+    final s = diff.inSeconds % 60;
+    countdownText.value =
+        [if (h > 0) '${h}ชม', '${m}นาที', '${s}วิ'].join(' ');
+  }
+}
+
+3.2 SettingsController (โหลด/บันทึกค่า + validate + trigger reschedule)
+// FILE: lib/controllers/settings_controller.dart
+import 'package:flutter/material.dart';
+import 'package:get/get.dart';
+import '../services/database_service.dart';
+import '../controllers/notification_controller.dart';
+import '../models/user_settings.dart';
+import '../utils/date_utils.dart';
+import '../utils/constants.dart';
+
+class SettingsController extends GetxController {
+  final loading = true.obs;
+  late UserSettings data;
+
+  // fields (observable)
+  final notificationEnabled = true.obs;
+  final soundEnabled = true.obs;
+  final vibrationEnabled = true.obs;
+  final interval = 60.obs;
+  final workStartMinutes = (9 * 60).obs;
+  final workEndMinutes = (17 * 60).obs;
+  final workingDays = <int>[1,2,3,4,5].obs;
+  final breakPeriods = <Map<String, dynamic>>[].obs;
+
+  @override
+  Future<void> onInit() async {
+    super.onInit();
+    data = await DatabaseService.loadSettings();
+    notificationEnabled.value = data.notificationEnabled;
+    soundEnabled.value = data.soundEnabled;
+    vibrationEnabled.value = data.vibrationEnabled;
+    interval.value = data.notificationIntervalMinutes;
+    workStartMinutes.value = data.workStartMinutes;
+    workEndMinutes.value = data.workEndMinutes;
+    workingDays.assignAll(data.workingDays);
+    breakPeriods.assignAll(data.breakPeriods);
+    loading.value = false;
+  }
+
+  Future<void> save() async {
+    // validate
+    if (interval.value < 30 || interval.value > 120) {
+      Get.snackbar('ข้อผิดพลาด', 'ช่วงเวลาแจ้งเตือนต้องอยู่ระหว่าง 30–120 นาที');
+      return;
+    }
+    if (workStartMinutes.value >= workEndMinutes.value) {
+      Get.snackbar('ข้อผิดพลาด', 'เวลาเริ่มต้องน้อยกว่าเวลาสิ้นสุด');
+      return;
+    }
+    // save
+    data
+      ..notificationEnabled = notificationEnabled.value
+      ..soundEnabled = soundEnabled.value
+      ..vibrationEnabled = vibrationEnabled.value
+      ..notificationIntervalMinutes = interval.value
+      ..workStartMinutes = workStartMinutes.value
+      ..workEndMinutes = workEndMinutes.value
+      ..workingDays = workingDays.toList()
+      ..breakPeriods = breakPeriods.toList();
+    await DatabaseService.saveSettings(data);
+
+    // reschedule
+    final nc = Get.find<NotificationController>();
+    await nc.rescheduleNext();
+
+    Get.snackbar('บันทึกแล้ว', 'ปรับตารางแจ้งเตือนใหม่เรียบร้อย');
+  }
+
+  // helpers for UI pickers
+  void pickStartTime(TimeOfDay t) => workStartMinutes.value = toMinutes(t);
+  void pickEndTime(TimeOfDay t) => workEndMinutes.value = toMinutes(t);
+
+  void toggleDay(int d) {
+    final idx = workingDays.indexOf(d);
+    if (idx >= 0) {
+      workingDays.removeAt(idx);
+    } else {
+      workingDays.add(d);
+      workingDays.sort();
+    }
+  }
+
+  void addBreak({required int start, required int end, List<int>? days}) {
+    if (end <= start) {
+      Get.snackbar('ข้อผิดพลาด', 'ช่วงพักต้องสิ้นสุดหลังเวลาเริ่ม');
+      return;
+    }
+    breakPeriods.add({
+      'name': 'พัก',
+      'startMinutes': start,
+      'endMinutes': end,
+      'enabledDays': (days ?? workingDays).toList(),
+    });
+  }
+
+  void removeBreak(int index) {
+    if (index >= 0 && index < breakPeriods.length) {
+      breakPeriods.removeAt(index);
+    }
+  }
+}
+
+3.3 HomeController (อัปเดต countdown ทุก 1 วิ)
+// FILE: lib/controllers/home_controller.dart
+import 'dart:async';
+import 'package:get/get.dart';
+import 'notification_controller.dart';
+
+class HomeController extends GetxController {
+  Timer? _timer;
+  final nc = Get.find<NotificationController>();
+
+  @override
+  void onInit() {
+    super.onInit();
+    nc.rescheduleNext(); // คำนวณครั้งแรก
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => nc.tickCountdown());
+  }
+
+  @override
+  void onClose() {
+    _timer?.cancel();
+    super.onClose();
+  }
+}
+
+4) Pages
+4.1 HomePage (countdown + ปุ่มทดสอบแจ้งเตือน/เปิด Settings)
+// FILE: lib/pages/home/home_page.dart
+import 'package:flutter/material.dart';
+import 'package:get/get.dart';
+import '../../controllers/home_controller.dart';
+import '../../controllers/notification_controller.dart';
+import '../../services/notification_service.dart';
+import '../../services/database_service.dart';
+import '../../app/routes/app_routes.dart';
+
+class HomePage extends GetView<HomeController> {
+  const HomePage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    Get.put(HomeController()); // lazy init
+    final nc = Get.find<NotificationController>();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Office Syndrome Helper'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () => Get.toNamed(Routes.settings),
+          )
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Obx(() {
+          final next = nc.nextTime.value;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    children: [
+                      const Text('เวลานัดถัดไป', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      Text(next != null ? next.toLocal().toString() : '—', style: const TextStyle(fontSize: 16)),
+                      const SizedBox(height: 16),
+                      Obx(() => Text(nc.countdownText.value, style: const TextStyle(fontSize: 28))),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () async {
+                  final s = await DatabaseService.loadSettings();
+                  await NotificationService.showNow(
+                    id: 999,
+                    title: 'ทดสอบแจ้งเตือน',
+                    body: 'นี่คือการทดสอบ',
+                  );
+                  Get.snackbar('ทดสอบแล้ว', 'ลองดึงแถบแจ้งเตือนดูได้เลย');
+                },
+                icon: const Icon(Icons.notifications_active),
+                label: const Text('ทดสอบแจ้งเตือนทันที'),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  await nc.rescheduleNext();
+                },
+                icon: const Icon(Icons.refresh),
+                label: const Text('คำนวณ/ตั้งนัดถัดไปใหม่'),
+              ),
+            ],
+          );
+        }),
+      ),
+    );
+  }
+}
+
+4.2 SettingsPage (เปิด/ปิด, interval, เวลา, วันทำงาน, ช่วงพัก)
+// FILE: lib/pages/settings/settings_page.dart
+import 'package:flutter/material.dart';
+import 'package:get/get.dart';
+import '../../controllers/settings_controller.dart';
+import '../../utils/constants.dart';
+import '../../utils/date_utils.dart';
+
+class SettingsPage extends GetView<SettingsController> {
+  const SettingsPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    Get.put(SettingsController());
+    return Scaffold(
+      appBar: AppBar(title: const Text('Settings')),
+      body: Obx(() {
+        if (controller.loading.value) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            SwitchListTile(
+              value: controller.notificationEnabled.value,
+              onChanged: (v) => controller.notificationEnabled.value = v,
+              title: const Text('เปิดการแจ้งเตือน'),
+            ),
+            SwitchListTile(
+              value: controller.soundEnabled.value,
+              onChanged: (v) => controller.soundEnabled.value = v,
+              title: const Text('เสียง'),
+            ),
+            SwitchListTile(
+              value: controller.vibrationEnabled.value,
+              onChanged: (v) => controller.vibrationEnabled.value = v,
+              title: const Text('สั่น'),
+            ),
+            const Divider(),
+            ListTile(
+              title: const Text('ช่วงเวลาระหว่างแจ้งเตือน (นาที)'),
+              trailing: DropdownButton<int>(
+                value: controller.interval.value,
+                items: kIntervals
+                    .map((e) => DropdownMenuItem(value: e, child: Text('$e')))
+                    .toList(),
+                onChanged: (v) => controller.interval.value = v ?? 60,
+              ),
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              title: const Text('เวลาเริ่มงาน'),
+              subtitle: Text(toTimeOfDay(controller.workStartMinutes.value).format(context)),
+              trailing: IconButton(
+                icon: const Icon(Icons.access_time),
+                onPressed: () async {
+                  final t = await showTimePicker(
+                    context: context,
+                    initialTime: toTimeOfDay(controller.workStartMinutes.value),
+                  );
+                  if (t != null) controller.pickStartTime(t);
+                },
+              ),
+            ),
+            ListTile(
+              title: const Text('เวลาสิ้นสุดงาน'),
+              subtitle: Text(toTimeOfDay(controller.workEndMinutes.value).format(context)),
+              trailing: IconButton(
+                icon: const Icon(Icons.access_time),
+                onPressed: () async {
+                  final t = await showTimePicker(
+                    context: context,
+                    initialTime: toTimeOfDay(controller.workEndMinutes.value),
+                  );
+                  if (t != null) controller.pickEndTime(t);
+                },
+              ),
+            ),
+            const Divider(),
+            const Text('วันทำงาน', style: TextStyle(fontWeight: FontWeight.bold)),
+            Wrap(
+              spacing: 8,
+              children: List.generate(7, (i) {
+                final d = i + 1; // 1..7
+                final sel = controller.workingDays.contains(d);
+                final labels = ['จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส', 'อา'];
+                return FilterChip(
+                  label: Text(labels[i]),
+                  selected: sel,
+                  onSelected: (_) => controller.toggleDay(d),
+                );
+              }),
+            ),
+            const Divider(),
+            const Text('ช่วงพัก (ตัวอย่างเพิ่มอย่างรวดเร็ว)', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            ...controller.breakPeriods.asMap().entries.map((e) {
+              final bp = e.value;
+              return ListTile(
+                title: Text('${bp['name'] ?? 'พัก'} '
+                    '(${toTimeOfDay(bp['startMinutes']).format(context)} - '
+                    '${toTimeOfDay(bp['endMinutes']).format(context)})'),
+                subtitle: const Text('แตะถังขยะเพื่อลบ'),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete, color: Colors.red),
+                  onPressed: () => controller.removeBreak(e.key),
+                ),
+              );
+            }),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.add),
+              label: const Text('เพิ่มช่วงพัก 12:00–13:00 (จ–ศ) ตัวอย่าง'),
+              onPressed: () => controller.addBreak(
+                start: 12 * 60,
+                end: 13 * 60,
+                days: const [1, 2, 3, 4, 5],
+              ),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              icon: const Icon(Icons.save),
+              label: const Text('บันทึกและตั้งแจ้งเตือนใหม่'),
+              onPressed: controller.save,
+            ),
+          ],
+        );
+      }),
+    );
+  }
+}
+
+5) ตรวจและรัน
+flutter pub get
+flutter run
+
+
+หน้า Home จะคำนวณนัดถัดไปและนับถอยหลังอัตโนมัติ
+
+หน้า Settings บันทึกแล้วจะ reschedule ใหม่ทันที
+
+ปุ่ม “ทดสอบแจ้งเตือนทันที” ใช้ตรวจ FLN 19 ได้รวดเร็ว

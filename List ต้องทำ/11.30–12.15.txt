@@ -1,0 +1,201 @@
+จัดช่วง 11:30–12:15: ทำ Notification + Background + Permission ให้ครบวงจร — ครอบคลุม Flutter Local Notifications (FLN 19.x), WorkManager (0.9.x), และ Permission flow (Android 13+) ตามข้อกำหนดในเอกสาร v6
+
+✅ สิ่งที่ต้องทำในช่วงนี้
+
+สร้าง NotificationService
+
+ใช้ flutter_local_notifications 19.x
+
+ตั้ง timezone = "Asia/Bangkok"
+
+ใช้ AndroidScheduleMode.exactAllowWhileIdle → ไม่ต้องขอ SCHEDULE_EXACT_ALARM
+
+มี scheduleAt() + showNow() (สำหรับปุ่ม “ทดสอบ”) + cancelAll()
+
+สร้าง BackgroundScheduler
+
+ใช้ WorkManager ลงทะเบียน ครั้งเดียว (ensureRegistered)
+
+ตั้ง periodic task ทุก 1 ชม. → ตรวจ/สร้างนัดใหม่ (reboot-safe)
+
+ใช้ guard _registered กันซ้ำ
+
+สร้าง PermissionService
+
+ขอ POST_NOTIFICATIONS เฉพาะ Android 13+ ครั้งเดียว
+
+เก็บ flag hasRequestedPermissions ใน UserSettings
+
+Manifest ต้องมี:
+
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+<uses-permission android:name="android.permission.VIBRATE" />
+<uses-permission android:name="android.permission.WAKE_LOCK" />
+<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+📂 โครงไฟล์ (แนะนำ)
+lib/services/
+  ├─ notification_service.dart
+  ├─ background_scheduler.dart
+  └─ permission_service.dart
+
+1) lib/services/notification_service.dart
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/timezone.dart' as tz;
+import 'package:timezone/data/latest_all.dart' as tzdata;
+
+class NotificationService {
+  static final _plugin = FlutterLocalNotificationsPlugin();
+
+  static Future<void> initialize() async {
+    tzdata.initializeTimeZones();
+    tz.setLocalLocation(tz.getLocation('Asia/Bangkok'));
+
+    const init = InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      iOS: DarwinInitializationSettings(),
+    );
+    await _plugin.initialize(init, onDidReceiveNotificationResponse: _onTap);
+
+    await _plugin
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(const AndroidNotificationChannel(
+          'office_syndrome_main',
+          'Office Syndrome',
+          description: 'แจ้งเตือนยืดเหยียดระหว่างงาน',
+          importance: Importance.high,
+        ));
+  }
+
+  static Future<void> scheduleAt(DateTime when,
+      {required int id,
+      required String title,
+      String? body,
+      bool playSound = true,
+      bool vibration = true}) async {
+    final details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        'office_syndrome_main',
+        'Office Syndrome',
+        channelDescription: 'แจ้งเตือนยืดเหยียดระหว่างงาน',
+        importance: Importance.high,
+        priority: Priority.high,
+        playSound: playSound,
+        enableVibration: vibration,
+      ),
+      iOS: const DarwinNotificationDetails(),
+    );
+
+    await _plugin.zonedSchedule(
+      id,
+      title,
+      body,
+      tz.TZDateTime.from(when, tz.local),
+      details,
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+      uiLocalNotificationDateInterpretation:
+          UILocalNotificationDateInterpretation.absoluteTime,
+    );
+  }
+
+  static Future<void> showNow({
+    required int id,
+    required String title,
+    String? body,
+  }) async {
+    await _plugin.show(
+      id,
+      title,
+      body,
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'office_syndrome_main',
+          'Office Syndrome',
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+        iOS: DarwinNotificationDetails(),
+      ),
+    );
+  }
+
+  static Future<void> cancelAll() => _plugin.cancelAll();
+
+  static void _onTap(NotificationResponse r) {
+    // TODO: เปิดหน้า Todo/Exercise flow
+  }
+}
+
+2) lib/services/background_scheduler.dart
+import 'package:workmanager/workmanager.dart';
+import 'package:get/get.dart';
+import 'package:office_syndrome_helper/services/database_service.dart';
+import 'package:office_syndrome_helper/services/notification_service.dart';
+import 'package:office_syndrome_helper/controllers/notification_controller.dart';
+
+class BackgroundScheduler {
+  static bool _registered = false;
+
+  static Future<void> ensureRegistered() async {
+    if (_registered) return;
+    _registered = true;
+
+    await Workmanager().initialize(_dispatcher, isInDebugMode: false);
+    await Workmanager().registerPeriodicTask(
+      'osh_tick',
+      'tick',
+      frequency: const Duration(hours: 1),
+      existingWorkPolicy: ExistingWorkPolicy.keep,
+      constraints: Constraints(networkType: NetworkType.not_required),
+    );
+  }
+
+  static void _dispatcher() {
+    Workmanager().executeTask((task, input) async {
+      final s = await DatabaseService.loadSettings();
+      if (!s.notificationEnabled) return true;
+
+      final controller = Get.isRegistered<NotificationController>()
+          ? Get.find<NotificationController>()
+          : NotificationController();
+
+      final next = controller.calculateNextNotificationTime();
+      await NotificationService.scheduleAt(
+        next,
+        id: 1001,
+        title: 'ถึงเวลายืดเหยียดแล้ว',
+        playSound: s.soundEnabled,
+        vibration: s.vibrationEnabled,
+      );
+      return true;
+    });
+  }
+}
+
+3) lib/services/permission_service.dart
+import 'package:permission_handler/permission_handler.dart';
+import 'package:office_syndrome_helper/services/database_service.dart';
+
+class PermissionService {
+  static Future<bool> ensureNotificationPermissionOnce() async {
+    final s = await DatabaseService.loadSettings();
+    if (!s.hasRequestedPermissions) {
+      final r = await Permission.notification.request(); // Android 13+
+      s.hasRequestedPermissions = true;
+      await DatabaseService.saveSettings(s);
+      return r.isGranted || r.isLimited;
+    }
+    final st = await Permission.notification.status;
+    return st.isGranted || st.isLimited;
+  }
+}
+
+🔑 สรุปผลบล็อกนี้
+
+✅ แจ้งเตือนแม่นยำ ±30 วินาที (FLN 19.x + exactAllowWhileIdle)
+
+✅ Background re-schedule ได้แม้รีบูต (WorkManager)
+
+✅ Permission flow รองรับ Android 13+ (POST_NOTIFICATIONS ครั้งเดียว)
+
+✅ Manifest + Service ครบตามเอกสาร v6

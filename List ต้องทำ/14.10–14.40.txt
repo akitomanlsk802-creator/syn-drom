@@ -1,0 +1,175 @@
+พร้อมลุยช่วง 14:10–14:40: โฟกัส “ย้ายของจากโปรเจกต์เก่า → โปรเจกต์ใหม่” แบบเร็ว-ชัวร์ ไม่พัง build และรีแฟกเตอร์ให้เข้ากับสคีมา/ดีไซน์ที่เราตั้งไว้ (minutes-only, BreakPeriod เป็น Map, FLN19 + WorkManager 0.9.x)
+
+เป้าหมาย 30 นาทีนี้
+
+คัดลอก assets / fonts / icons และลงทะเบียนใน pubspec.yaml
+
+ย้าย หน้า/วิดเจ็ต ที่ใช้ได้จากโปรเจกต์เก่า แล้วปรับ import/เส้นทาง
+
+ย้าย data คงที่ (pain points / treatments) → ใส่ไฟล์กลาง
+
+รีแฟกเตอร์จุด “เสี่ยงพัง” ให้เข้ากับสคีมาใหม่ (เวลา/BreakPeriod/Controller)
+
+สmoke test ให้รันได้จริง (Home/Settings/ทดสอบแจ้งเตือน)
+
+1) ย้าย Assets + Fonts
+
+คัดลอกจากโปรเจกต์เก่า (ถ้ามี):
+
+old_project/assets/*      →  office_syndrome_v2/assets/
+old_project/fonts/*       →  office_syndrome_v2/assets/fonts/
+old_project/images/*      →  office_syndrome_v2/assets/images/
+old_project/icons/*       →  office_syndrome_v2/assets/icons/
+
+
+อัปเดต pubspec.yaml:
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
+    - assets/images/
+    - assets/icons/
+
+  fonts:
+    - family: NotoSansThai
+      fonts:
+        - asset: assets/fonts/NotoSansThai-Regular.ttf
+        - asset: assets/fonts/NotoSansThai-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/NotoSansThai-Bold.ttf
+          weight: 700
+
+
+อัปเดตธีมให้ใช้ฟอนต์ (ถ้าคุณเพิ่มไว้):
+
+// main.dart (หรือ theme.dart)
+theme: ThemeData(
+  useMaterial3: true,
+  colorSchemeSeed: const Color(0xFF2196F3),
+  fontFamily: 'NotoSansThai',
+),
+
+
+รันดึงทรัพยากร:
+
+flutter pub get
+
+2) ย้ายโค้ดหน้า/วิดเจ็ตจากโปรเจกต์เก่า
+
+คัดลอกไฟล์ที่ “ไม่ผูกกับสคีมาเก่า” มาก เช่น Widget UI, helper ที่ไม่แตะ DB/เวลา:
+
+old/lib/widgets/*                     → lib/widgets/           (ถ้ามี)
+old/lib/pages/* (เลือกเฉพาะที่ใช้)   → lib/pages/<เหมาะสม>/
+old/lib/app/theme/* (สี/spacing)      → lib/app/theme/
+
+
+หลักย้ายเร็ว:
+
+ห้ามยกมา model/adapter เก่า ที่เก็บ TimeOfDay หรือ BreakPeriod เป็น @HiveType
+
+import ให้เป็น relative path (เช่น ../../services/...) เลี่ยงชื่อ package เก่า
+
+ถ้า widget ใช้ model เก่า → เปลี่ยน props ให้รับ int minutes แทน TimeOfDay
+
+3) ใส่ “ข้อมูลคงที่” กึ่งสำเร็จรูป (ใช้ทันที)
+
+สร้าง/วาง:
+
+lib/data/pain_points_data.dart
+import '../models/pain_point.dart';
+
+const painPoints = <PainPoint>[
+  PainPoint(id: 1, name: 'คอ', description: 'เมื่อยคอจากก้มจอนาน', treatmentIds: [101,102,103]),
+  PainPoint(id: 2, name: 'บ่า/ไหล่', description: 'ตึงบ่าไหล่จากท่านั่ง', treatmentIds: [201,202,203]),
+  PainPoint(id: 3, name: 'หลังบน', description: 'หลังช่วงบนตึง', treatmentIds: [301,302]),
+  PainPoint(id: 4, name: 'หลังล่าง', description: 'ปวดเอว/หลังล่าง', treatmentIds: [401,402]),
+  PainPoint(id: 5, name: 'แขน/ศอก', description: 'ใช้งานแขนซ้ำๆ', treatmentIds: [501,502]),
+  PainPoint(id: 6, name: 'ข้อมือ/มือ/นิ้ว', description: 'พิมพ์/เมาส์เยอะ', treatmentIds: [601,602,603]),
+  PainPoint(id: 7, name: 'ขา', description: 'นั่งนาน/ไหลเวียนเลือด', treatmentIds: [701,702]),
+  PainPoint(id: 8, name: 'เท้า', description: 'ยืนนาน/รองเท้าไม่เหมาะ', treatmentIds: [801,802]),
+];
+
+lib/data/treatments_data.dart
+import '../models/treatment.dart';
+
+const treatments = <Treatment>[
+  Treatment(id: 101, name: 'ยืดคอด้านข้าง', description: 'เอียงศีรษะเบาๆ ค้าง 20 วิ ×2', durationSeconds: 40, painPointId: 1),
+  Treatment(id: 102, name: 'ก้ม-เงยช้าๆ', description: 'ค้างแต่ละท่า 15 วิ ×2', durationSeconds: 30, painPointId: 1),
+  Treatment(id: 103, name: 'หมุนคอเบาๆ', description: '2 รอบช้าๆ', durationSeconds: 30, painPointId: 1),
+  // …เติมจนอย่างน้อย 19 ท่า ครอบคลุมทุกจุด
+  Treatment(id: 201, name: 'ยืดบ่าไหล่', description: 'ดึงแขนข้ามลำตัว 20 วิ ×2', durationSeconds: 40, painPointId: 2),
+  Treatment(id: 301, name: 'ยืดสะบัก', description: 'กางแขน/ไขว้หลัง 20 วิ ×2', durationSeconds: 40, painPointId: 3),
+  Treatment(id: 401, name: 'Cat-Cow', description: 'สลับโค้ง/แอ่นหลัง 30 วิ', durationSeconds: 30, painPointId: 4),
+  Treatment(id: 601, name: 'ยืดปลายแขน', description: 'เหยียดข้อมือขึ้น/ลง 15 วิ ×2', durationSeconds: 30, painPointId: 6),
+  Treatment(id: 701, name: 'ยืดต้นขาหลัง', description: 'ค้าง 20 วิ ×2 ต่อข้าง', durationSeconds: 80, painPointId: 7),
+];
+
+
+ภายหลังถ้าคุณมีเนื้อหาท่าจากโปรเจกต์เก่า ให้แทนที่ ID/ข้อความตามจริงได้เลย
+
+4) รีแฟกเตอร์จุด “เสี่ยงพัง” ให้เข้ากับสคีมาใหม่
+
+A) เวลาใน Hive → int นาที
+
+ค้นหาในโค้ดเก่า: TimeOfDay, format(context), hour/minute
+
+แทนที่ด้วย: toMinutes(TimeOfDay) และ toTimeOfDay(int)
+
+เก็บลง Hive เป็น int เท่านั้น
+
+B) BreakPeriod
+
+ถ้าเคยใช้ @HiveType() → ลบทิ้ง และเปลี่ยนเป็น Map<String,dynamic>
+
+โครงที่รองรับ:
+{ "name": String, "startMinutes": int, "endMinutes": int, "enabledDays": List<int> }
+
+Validation “ไม่ซ้อนช่วง” ใช้ใน SettingsController.save() หรือสร้าง helper ใน service
+
+C) Notification / Background
+
+เรียกใช้ NotificationService.scheduleAt() ที่เราเขียน (FLN 19 + exactAllowWhileIdle)
+
+ห้ามใช้ android_alarm_manager_plus ซ้ำกับ WorkManager
+
+BackgroundScheduler.ensureRegistered() ต้องถูกเรียกใน main()
+
+D) Import/เส้นทาง
+
+เปลี่ยน import แบบเก่า → relative path (เช่น ../services/...) ให้ตรงโครงใหม่
+
+ลบ import / adapter เก่าที่ไม่ใช้ → flutter clean
+
+5) Quick scripts ช่วยย้าย & เคลียร์
+# คัดลอกเฉพาะไฟล์ UI ที่ไม่พึ่งพา model เก่า (ปรับ path ตามจริง)
+robocopy ..\old_project\lib\widgets .\lib\widgets *.dart /E
+robocopy ..\old_project\assets .\assets *.* /E
+robocopy ..\old_project\assets\fonts .\assets\fonts *.* /E
+
+# ล้าง build ที่ค้างจาก adapter เก่า
+flutter clean
+flutter pub get
+flutter pub run build_runner build -d
+
+6) Smoke test (5 นาทีสุดท้าย)
+
+flutter run → เปิดหน้า Home เห็นเวลานัดถัดไป + countdown
+
+ไปหน้า Settings:
+
+เปิด/ปิดแจ้งเตือน แล้วกด บันทึกและตั้งแจ้งเตือนใหม่ → SnackBar “บันทึกแล้ว”
+
+เพิ่มช่วงพัก 12:00–13:00 (จ–ศ) → บันทึก → กลับ Home ดูเวลานัดถัดไป “กระโดด” เลี่ยงช่วงพัก
+
+ปุ่ม ทดสอบแจ้งเตือนทันที → เห็น Notification ขึ้นจริง
+
+(ถ้ามีเวลา) รีสตาร์ท emulator → ตรวจว่า background ยังตั้งนัดได้ (WorkManager guard)
+
+7) ถ้าติดจุดใดจุดหนึ่ง ให้แก้แบบเร็ว
+
+Import พัง/หาไฟล์ไม่เจอ → เปลี่ยนเป็น relative path ให้ตรงโครง
+
+Adapter เก่าค้าง → flutter clean แล้วค่อย build_runner build -d
+
+แจ้งเตือนไม่ขึ้นบน Android 13+ → เช็กว่า PermissionService.ensureNotificationPermissionOnce() ถูกเรียกใน main() แล้ว
