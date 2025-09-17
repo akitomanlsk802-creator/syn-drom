@@ -1,49 +1,244 @@
-ยอดเยี่ยมครับ CEO 🎉
-จากรายงานล่าสุด dev ทำตามที่สั่งแล้ว:
+ไทม์ไลน์ลงมือ (โซนเวลา Asia/Bangkok)
 
-user_settings.dart → เพิ่มฟิลด์ใหม่ครบ (notificationsEnabled, soundEnabled, vibrationEnabled, maxSnoozeCount) + validation + copyWith
+09:00–09:30 • Bootstrap โปรเจ็กต์ใหม่ + โครงสร้าง
 
-i_notification_service.dart → เพิ่ม onSettingsChanged() (แม้จริง ๆ ไม่จำเป็นต้องอยู่ใน interface แต่ตอนนี้ consistent แล้ว)
+flutter create office_syndrome_v2 && cd office_syndrome_v2
 
-settings_controller_test.dart → โครงสร้างเทสต์ถูกต้อง, ผ่านทั้งหมด
+ตั้งค่า Android SDK 36:
 
-settings_page_test.dart → เทสต์ async แก้แล้ว, ใช้ GetX state management ตรงไปตรงมา, redundant state updates ถูกลบ, ผ่านครบ
+android/app/build.gradle: compileSdk=36, defaultConfig { minSdk 26; targetSdk 36 }
 
-✅ ผล: Tests ทั้งหมดผ่าน, โครงสร้าง consistent, ไม่เจอ error/warning
+compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17; coreLibraryDesugaringEnabled true }
 
-สถานะโปรเจกต์ตอนนี้
+dependencies { coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4" }
 
-Sprint 3 – HomePage → เสร็จ
+kotlinOptions { jvmTarget = "17" }
 
-Sprint 3 – TodoPage → เสร็จ
+Manifest ใส่: POST_NOTIFICATIONS, RECEIVE_BOOT_COMPLETED, VIBRATE, WAKE_LOCK
 
-Sprint 3 – SettingsPage → เสร็จ + Tests ผ่าน
+09:30–10:00 • Dependencies ตามที่คุณกำหนด
 
-เหลือ: StatisticsPage (Sprint 3 ส่วนสุดท้าย)
+# pubspec.yaml (ตัวหลักที่ใช้วันนี้)
+dependencies:
+  get: 4.6.6
+  hive_flutter: 1.1.0
+  flutter_secure_storage: 9.0.0
+  flutter_local_notifications: 19.0.0
+  workmanager: 0.9.0+3
+  timezone: ^0.10.0
+  fl_chart: ^1.1.0
+  permission_handler: ^11.3.1
+  uuid: ^4.4.2
+dev_dependencies:
+  flutter_lints: 3.0.1
+  flutter_test:
+  integration_test:
+  mockito: 5.4.4
+  golden_toolkit: 0.15.0
 
-สิ่งที่ต้องบอก dev ต่อไป
 
-ปิดงาน SettingsPage
+หมายเหตุ: ใช้ timezone เพื่อกำหนด Asia/Bangkok ให้ FLN 19 ตรงเวลา
 
-เปิด PR ชื่อ “Sprint 3 – SettingsPage”
+10:00–10:50 • โครงสร้างโค้ด + สัญญาโมเดล (รีแฟกเตอร์ตามสคีมาใหม่)
 
-ใช้ PR Checklist (เหมือน TodoPage แต่สำหรับ SettingsPage)
+โครงสร้าง (ย่อ):
 
-แนบผล flutter analyze + flutter test -r expanded + เดโม UI (ฟอร์ม, validation, save + trigger)
+lib/
+  app/{routes,theme}
+  controllers/{splash,setup,home,todo,settings,statistics,notification}
+  models/{user_settings.dart, notification_session.dart, daily_stats.dart}
+  services/{database_service.dart, notification_service.dart, background_scheduler.dart,
+            permission_service.dart, break_time_service.dart, statistics_service.dart, random_service.dart,
+            image_export_service.dart}
+  pages/{splash,setup,home,todo,settings,statistics}
+  data/{pain_points_data.dart, treatments_data.dart}
+  utils/{date_utils.dart, notification_utils.dart, constants.dart}
 
-เตรียมเริ่ม StatisticsPage
 
-สร้าง StatisticsPage UI + Controller
+รีแฟกเตอร์จากโปรเจ็กต์เก่า (สำคัญสุด 3 จุด):
 
-ฟีเจอร์: summary (today, 7d, 30d, 90d, month), success rate graph (fl_chart), export PNG (ImageExportService)
+แทน TimeOfDay ใน Hive → เก็บเป็น int นาทีตั้งแต่ 00:00
 
-Acceptance Criteria:
+BreakPeriod เก็บเป็น List<Map<String,dynamic>> (ไม่ใช้ Adapter) + วาลิเดชัน “ไม่ซ้อนเวลา”
 
-แสดงข้อมูลสถิติถูกต้อง
+ใช้ enum SessionStatus และ TypeID เดิมของ Hive ให้ตรง (กันชน migration)
+(รายละเอียดแนวทางและรูปแบบฟิลด์ตรงกับเอกสารสเปกของโปรเจ็กต์)
 
-กราฟ success rate render ได้
+10:50–11:30 • Database & Encryption
 
-กด Export → ได้ไฟล์ PNG และบันทึกใน gallery
+เปิด Hive พร้อม AesCipher โดยอ่านคีย์จาก flutter_secure_storage
 
-👉 สรุปสั่ง dev ตอนนี้:
-“ส่ง PR SettingsPage (พร้อม test evidence + demo) ให้เรียบร้อย จากนั้นเริ่มทำ StatisticsPage ต่อทันทีตาม spec v6”
+สร้าง DatabaseService.loadOrCreateDefaults() ค่าเริ่มต้น:
+
+notificationIntervalMinutes∈{30,45,60,90,120} (แนะนำ 60)
+
+workStartMinutes=540 (09:00), workEndMinutes=1020 (17:00)
+
+workingDays=[1,2,3,4,5]
+
+breakPeriods=[] (ว่างได้)
+
+maxSnoozeCount=3 ฯลฯ
+
+11:30–12:15 • Notifications (FLN 19.0.0) + Asia/Bangkok
+
+NotificationService.initialize():
+
+tz.initializeTimeZones(); tz.setLocalLocation(tz.getLocation('Asia/Bangkok'));
+
+สร้าง channel office_syndrome_main
+
+scheduleAt() ใช้ zonedSchedule(..., androidScheduleMode: exactAllowWhileIdle) (ไม่ต้อง SCHEDULE_EXACT_ALARM)
+
+ปุ่ม “ทดสอบ” บน Home → showNow()
+
+12:15–13:00 • Scheduler ฉลาด (กระโดดข้าม boundary)
+
+NotificationController.calculateNextNotificationTime()
+หลักการ: last + interval → ถ้าอยู่นอกเวลางาน/ไม่ใช่วันทำงาน/ทับพัก ⇒ กระโดด ไปจุด valid ถัดไปทันที (ไม่ไล่บวกทีละนาที)
+
+เรียก onSettingsChanged() → cancelAll() + คำนวณ next + scheduleAt(next) + บันทึก lastNotificationTime
+
+13:00–13:30 • Workmanager 0.9.0+3 (พื้นหลัง + reboot-safe)
+
+ข้อควรระวังเวอร์ชัน 0.9:
+
+Workmanager().initialize(callbackDispatcher, isInDebugMode:false); ต้องเป็น ท็อปเลเวล/สแตติก
+
+ลงทะเบียน registerPeriodicTask('osh_tick','tick', frequency: 1h, existingWorkPolicy: keep)
+
+ใน callback: โหลด settings → ถ้ายังเปิดแจ้งเตือน → ตรวจ/ตั้งนัดถัดไป (single guard)
+
+13:30–14:10 • หน้า UI หลัก (M3)
+
+Splash: init DB/FLN/Workmanager → route ไป Setup หรือ Home
+
+Setup: เลือก 1–3 จุด (ขั้นต่ำ 1) → บันทึกลง UserSettings.selectedPainPointIds
+
+Home: แสดงจุดที่เลือก, countdown real-time, ปุ่ม ทดสอบ/สถิติ/ตั้งค่า
+
+Todo: แสดง 2 ท่าที่สุ่มจากจุดปวดที่เลือก → ปุ่ม “เสร็จแล้ว/เลื่อน15นาที/ข้าม” (จำกัด snooze ตาม max)
+
+Settings: เปิด/ปิดแจ้งเตือน, interval, เวลาเริ่ม-สิ้นสุด, วันทำงาน 1–7 วัน, ช่วงพักหลายชุด (ไม่ซ้อน), เสียง/สั่น
+
+Statistics: สรุป วันนี้/7/30/90/เดือนนี้/ก่อน + ปุ่ม Export รูป (ผ่าน gal หรือบันทึกไฟล์ชั่วคราว)
+
+14:10–14:40 • ย้ายทรัพยากรจากโปรเจ็กต์เก่า (เฉพาะที่มีคุณค่า)
+
+โค้ดหน้าจอ/วิดเจ็ตที่เข้ากับสคีมาใหม่ (ปรับ import/เส้นทาง)
+
+ภาพ/ไอคอน/ฟอนต์ (Roboto/Noto Sans Thai ถ้ามี)
+
+ทดสอบ build → แก้ import ที่ขัดกัน/ลบ adapter เก่าของ BreakPeriod
+
+14:40–15:10 • เทสหลัก (ขั้นต่ำต้องผ่านวันนี้)
+
+Unit (ธุรกิจ):
+
+next-time เคารพเวลางาน/วันทำงาน/ช่วงพัก
+
+วาลิเดชัน BreakPeriod “ไม่ซ้อนเวลา”
+
+บันทึกสถิติรายวัน + successRate
+
+Widget (สั้นๆ): setup ≥1 จุด → home มี countdown → settings เปลี่ยน interval แล้ว next ถูก
+
+Manual:
+
+Emulator API 26 และ 34/36: เปิดสิทธิ์แจ้งเตือน, รับแจ้งเตือน, snooze/skip/complete
+
+รีบูต emulator → Workmanager ช่วยตั้งนัดใหม่
+
+15:10–15:30 • Polish & Hardening
+
+ปรับข้อความ/empty-states (ยังไม่เลือกจุดปวด, ปิด noti, ไม่มีสถิติ)
+
+ลิมิตค่า input: interval เฉพาะ {30,45,60,90,120}, workStart < workEnd, ช่วงพักไม่ซ้อน
+
+ตรวจ UI scale 1.3x แล้วไม่ล้น, ปุ่มสัมผัส ≥48dp
+
+15:30–15:55 • Build & ตรวจปลายทาง
+
+flutter clean && flutter pub get && flutter run
+
+สร้าง keystore (ครั้งแรก) แล้ว: flutter build apk --release
+
+ลองติดตั้ง APK บนเครื่องทดสอบหนึ่งเครื่อง
+
+15:55–16:00 • แผนสำรองทันที
+
+ถ้าติดจุดสถิติ/กราฟ: คงไว้สรุปตัวเลขก่อน กราฟค่อยเพิ่มทีหลัง
+
+ถ้าติด Export รูป: บันทึก PNG แบบพื้นฐานก่อน (ผ่าน Canvas) แล้วค่อยต่อ gal
+
+ถ้าติด Workmanager: ใช้ single-shot scheduling ผ่าน FLN + เปิดแอปการันตี แล้วค่อยคืนค่า periodic หลังเคลียร์
+
+เช็กลิสต์ย้ายจากโปรเจ็กต์เก่า → ใหม่วันนี้
+
+ สร้างแอปใหม่ Android-only + ตั้ง SDK 36 + JDK/Kotlin 17 ครบ
+
+ ย้าย assets/fonts + เปลี่ยน pubspec.yaml ให้ประกาศฟอนต์ไทย/อังกฤษ (ถ้ามี)
+
+ ลบ/งดใช้ BreakPeriod Adapter เก่า → เก็บเป็น List<Map>
+
+ แปลง TimeOfDay → int นาที ในทุกจุดของ UserSettings และโค้ดที่เกี่ยว
+
+ ย้าย logic notification/scheduler → ปรับให้ใช้ FLN 19 + exactAllowWhileIdle
+
+ ใช้ Workmanager 0.9.0+3: ตัว dispatcher ต้อง top-level, registerPeriodicTask แบบ guard
+
+ หน้า Setup/Home/Todo/Settings/Statistics ทำงานครบเส้นทาง
+
+ ทดสอบแจ้งเตือนจริง 1–2 รอบ + snooze/skip/complete
+
+ รันเทสสั้นๆ และ build APK release
+
+จุดต่างสำคัญ (version-aware) ที่ต้องระวังวันนี้
+
+target/compileSdk 36: อัปเดต Gradle/AGP ตามเวอร์ชัน Flutter 3.32 (หากมี warning จาก AGP ให้ขยับเวอร์ชันตามที่ Flutter ระบุ)
+
+Workmanager 0.9.x:
+
+ห้ามเรียกใช้ใน isolate ที่ไม่มีการ init; callback ต้องเป็น ฟังก์ชันท็อปเลเวล
+
+ใช้ ExistingWorkPolicy.keep กันลงทะเบียนซ้ำ
+
+FLN 19: ใช้ AndroidScheduleMode.exactAllowWhileIdle → ไม่ต้องขอ SCHEDULE_EXACT_ALARM แต่ต้องแน่ใจว่าได้สิทธิ์ POST_NOTIFICATIONS บน Android 13+
+
+Hive Encryption: คีย์ 32 bytes เก็บใน flutter_secure_storage; ห้ามฮาร์ดโค้ด
+
+Minutes-everywhere: util toMinutes(TimeOfDay)/toTimeOfDay(int) ให้พร้อมใช้ทั้ง Service และ UI
+
+นิยาม “เสร็จวันนี้” (Definition of Done)
+
+Build และรันบน Emulator/Device ได้ (Android 10/14/15 อย่างน้อย 1 รุ่น)
+
+แจ้งเตือนทำงานจริง, snooze/skip/complete ได้, reboot แล้วยังมี schedule (periodic guard)
+
+Settings แก้ไขแล้วมีผลทันที (re-schedule ≤ 1s)
+
+Statistics อัปเดตตัวเลขทันทีหลังจบ session (กราฟอย่างง่ายหรือเลื่อนได้ถ้าเวลาไม่พอ)
+
+มีชุดเทสพื้นฐานผ่าน (unit scheduler/break + widget flow สั้น)
+
+ได้ APK release เพื่อนำไปติดตั้งทดสอบภายใน
+
+คำสั่งสำเร็จรูป (คัดลอกไปรันตามช่วงเวลา)
+# Bootstrap
+flutter create office_syndrome_v2
+cd office_syndrome_v2
+# แก้ build.gradle/Manifest ตามเช็กลิสต์ แล้ว:
+flutter pub get
+
+# รันทดสอบสั้น
+flutter test
+
+# รันแอปดีบัก
+flutter run
+
+# (ครั้งแรกเท่านั้น) สร้าง keystore
+keytool -genkey -v -keystore android/app/osh.keystore -alias osh \
+  -keyalg RSA -keysize 2048 -validity 10000
+
+# Build release
+flutter build apk --release

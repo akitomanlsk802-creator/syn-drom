@@ -1,0 +1,248 @@
+สิ่งที่ต้องเสร็จในบล็อกนี้
+
+โครงโฟลเดอร์ lib/ สำหรับย้ายโค้ด
+
+โมเดล Hive (typeId คงที่): UserSettings(0), NotificationSession(1), DailyStats(3), SessionStatus(10)
+
+ยูทิลเวลาแบบ “นาทีตั้งแต่ 00:00” + normalize midnight
+
+dev deps + คำสั่ง gen adapters
+
+เช็คลิสต์รีแฟกเตอร์จากโปรเจ็กต์เก่า
+
+1) สร้างโครงโฟลเดอร์ (ถ้ายังไม่ได้ทำ)
+mkdir -p lib/{app,controllers,models,services,pages,data,utils}
+
+2) ติดตั้ง dev-deps สำหรับ Hive adapters
+flutter pub add --dev hive_generator build_runner
+
+3) วางไฟล์โมเดล (คัดตามสคีมา v6)
+lib/models/user_settings.dart (typeId = 0)
+import 'package:hive/hive.dart';
+
+part 'user_settings.g.dart';
+
+@HiveType(typeId: 0)
+class UserSettings extends HiveObject {
+  @HiveField(0)  List<int> selectedPainPointIds;
+  @HiveField(1)  int notificationIntervalMinutes;        // 30..120
+  @HiveField(2)  int workStartMinutes;                   // e.g. 540 (09:00)
+  @HiveField(3)  int workEndMinutes;                     // e.g. 1020 (17:00)
+  @HiveField(4)  List<int> workingDays;                  // 1..7 (จ..อา)
+  /// เก็บเป็น Map<String,dynamic> เพื่อลดปัญหา adapter/migration
+  /// ตัวอย่าง: {"enabledDays":[1,2,3,4,5], "startMinutes":720, "endMinutes":780, "name":"พักกลางวัน"}
+  @HiveField(5)  List<Map<String, dynamic>> breakPeriods;
+
+  @HiveField(6)  bool soundEnabled;
+  @HiveField(7)  bool vibrationEnabled;
+  @HiveField(8)  bool notificationEnabled;
+
+  @HiveField(9)  int maxSnoozeCount;                     // default 3
+  @HiveField(10) bool hasRequestedPermissions;           // ขอสิทธิ์ครั้งแรกแล้วหรือยัง
+  @HiveField(11) DateTime? lastNotificationTime;         // เวลาตั้งแจ้งเตือนล่าสุด
+  @HiveField(12) String? currentSessionId;               // อ้างอิง session ปัจจุบัน (ถ้ามี)
+
+  UserSettings({
+    required this.selectedPainPointIds,
+    required this.notificationIntervalMinutes,
+    required this.workStartMinutes,
+    required this.workEndMinutes,
+    required this.workingDays,
+    required this.breakPeriods,
+    required this.soundEnabled,
+    required this.vibrationEnabled,
+    required this.notificationEnabled,
+    required this.maxSnoozeCount,
+    required this.hasRequestedPermissions,
+    this.lastNotificationTime,
+    this.currentSessionId,
+  });
+
+  /// ค่าตั้งต้นตามสเปก v6
+  factory UserSettings.defaults() => UserSettings(
+        selectedPainPointIds: [],
+        notificationIntervalMinutes: 60,
+        workStartMinutes: 9 * 60,
+        workEndMinutes: 17 * 60,
+        workingDays: [1, 2, 3, 4, 5],
+        breakPeriods: [],
+        soundEnabled: true,
+        vibrationEnabled: true,
+        notificationEnabled: true,
+        maxSnoozeCount: 3,
+        hasRequestedPermissions: false,
+        lastNotificationTime: null,
+        currentSessionId: null,
+      );
+
+  /// Validation เบื้องต้น (โยนข้อความผิดพลาดถ้าไม่ผ่าน)
+  void validate() {
+    if (notificationIntervalMinutes < 30 || notificationIntervalMinutes > 120) {
+      throw ArgumentError('interval ต้องอยู่ในช่วง 30..120 นาที');
+    }
+    if (workStartMinutes < 0 || workStartMinutes > 1439 ||
+        workEndMinutes   < 0 || workEndMinutes   > 1439 ||
+        workStartMinutes >= workEndMinutes) {
+      throw ArgumentError('เวลาเริ่ม/สิ้นสุดงานไม่ถูกต้อง');
+    }
+    if (workingDays.any((d) => d < 1 || d > 7)) {
+      throw ArgumentError('workingDays ต้องอยู่ในช่วง 1..7');
+    }
+    // ตรวจซ้อนช่วงพักแบบง่าย (ทับในวันเดียวกันถือว่าไม่ผ่าน)
+    for (final bp in breakPeriods) {
+      if (!(bp.containsKey('enabledDays') && bp.containsKey('startMinutes') && bp.containsKey('endMinutes'))) {
+        throw ArgumentError('breakPeriod รูปแบบไม่ถูกต้อง');
+      }
+    }
+  }
+}
+
+lib/models/notification_session.dart (typeId = 1, 10)
+import 'package:hive/hive.dart';
+
+part 'notification_session.g.dart';
+
+@HiveType(typeId: 10)
+enum SessionStatus {
+  @HiveField(0) scheduled,
+  @HiveField(1) inProgress,
+  @HiveField(2) completed,
+  @HiveField(3) snoozed,
+  @HiveField(4) skipped,
+}
+
+@HiveType(typeId: 1)
+class NotificationSession extends HiveObject {
+  @HiveField(0)  String id;                  // UUID
+  @HiveField(1)  DateTime scheduledTime;     // เวลาที่ตั้ง
+  @HiveField(2)  DateTime? actualTime;       // เวลาที่แจ้ง/เริ่มจริง
+  @HiveField(3)  int painPointId;            // 1..8
+  @HiveField(4)  List<int> treatmentIds;     // ปกติ 2 ท่า
+  @HiveField(5)  SessionStatus status;       // สถานะ
+  @HiveField(6)  int snoozeCount;            // ≤ maxSnoozeCount
+  @HiveField(7)  DateTime? completedTime;    // ต้องมีถ้า completed
+  @HiveField(8)  List<bool> treatmentCompleted; // ยาวเท่า treatmentIds
+  @HiveField(9)  int durationSeconds;        // เวลารวมที่ใช้จริง
+
+  NotificationSession({
+    required this.id,
+    required this.scheduledTime,
+    this.actualTime,
+    required this.painPointId,
+    required this.treatmentIds,
+    required this.status,
+    required this.snoozeCount,
+    this.completedTime,
+    required this.treatmentCompleted,
+    required this.durationSeconds,
+  });
+
+  void validate() {
+    if (treatmentCompleted.length != treatmentIds.length) {
+      throw ArgumentError('treatmentCompleted ต้องยาวเท่า treatmentIds');
+    }
+    if (status == SessionStatus.completed && completedTime == null) {
+      throw ArgumentError('completed ต้องมี completedTime');
+    }
+  }
+}
+
+lib/models/daily_stats.dart (typeId = 3)
+import 'package:hive/hive.dart';
+
+part 'daily_stats.g.dart';
+
+@HiveType(typeId: 3)
+class DailyStats extends HiveObject {
+  @HiveField(0) DateTime date;                      // แนะนำ normalize 00:00 local
+  @HiveField(1) int totalNotifications;
+  @HiveField(2) int completedSessions;
+  @HiveField(3) int snoozedSessions;
+  @HiveField(4) int skippedSessions;
+  @HiveField(5) Map<int, int> painPointFrequency;   // painPointId -> count
+  @HiveField(6) int totalDurationSeconds;
+
+  DailyStats({
+    required this.date,
+    required this.totalNotifications,
+    required this.completedSessions,
+    required this.snoozedSessions,
+    required this.skippedSessions,
+    required this.painPointFrequency,
+    required this.totalDurationSeconds,
+  });
+
+  double get successRate =>
+      totalNotifications > 0 ? (completedSessions / totalNotifications) * 100 : 0.0;
+
+  factory DailyStats.empty(DateTime d) => DailyStats(
+        date: DateTime(d.year, d.month, d.day),
+        totalNotifications: 0,
+        completedSessions: 0,
+        snoozedSessions: 0,
+        skippedSessions: 0,
+        painPointFrequency: <int, int>{},
+        totalDurationSeconds: 0,
+      );
+}
+
+(เสริม) โมเดลข้อมูลคงที่ที่ไม่ลง Hive
+lib/models/pain_point.dart
+class PainPoint {
+  final int id;               // 1..8
+  final String name;
+  final String description;
+  final List<int> treatmentIds;
+
+  const PainPoint({required this.id, required this.name, required this.description, required this.treatmentIds});
+}
+
+lib/models/treatment.dart
+class Treatment {
+  final int id;
+  final String name;
+  final String description;
+  final int durationSeconds;  // ต่อท่า
+  final int painPointId;      // 1..8
+
+  const Treatment({required this.id, required this.name, required this.description, required this.durationSeconds, required this.painPointId});
+}
+
+4) ยูทิลเวลาแบบ “นาทีตั้งแต่ 00:00”
+lib/utils/date_utils.dart
+import 'package:flutter/material.dart';
+
+int toMinutes(TimeOfDay t) => t.hour * 60 + t.minute;
+TimeOfDay toTimeOfDay(int minutes) =>
+    TimeOfDay(hour: (minutes ~/ 60) % 24, minute: minutes % 60);
+
+DateTime normalizeToMidnight(DateTime d) => DateTime(d.year, d.month, d.day);
+
+5) สั่ง generate Hive adapters
+
+(ต้องทำหลังจากเพิ่มไฟล์ .dart ข้างบนครบ)
+
+flutter pub run build_runner build -d
+
+6) เช็คลิสต์รีแฟกเตอร์จากโปรเจ็กต์เก่า → โค้ดใหม่ (ทำทันทีหลัง gen)
+
+ แปลงทุกฟิลด์เวลาเป็น “นาที” (ห้ามเก็บ TimeOfDay ลง Hive)
+
+ เปลี่ยน BreakPeriod เดิม (ที่เคยเป็น @HiveType) → เก็บเป็น Map<String,dynamic> ใน UserSettings.breakPeriods
+
+ ตรวจสอบการใช้ enum/TypeId ให้ตรง: SessionStatus(10), UserSettings(0), NotificationSession(1), DailyStats(3)
+
+ จุดที่เรียก scheduler ให้ไปอ่านจากนาที และตรวจไม่ซ้อนช่วงพัก
+
+ ถ้าโปรเจ็กต์เก่าเคยมี adapter ของ BreakPeriod: ลบไฟล์ *.g.dart ของมันออก และล้างด้วย flutter clean → flutter pub get → gen ใหม่
+
+7) ต่อบล็อกถัดไป (11:00 โดยประมาณ): Services แกนหลัก
+
+DatabaseService (init Hive + encryption key จาก flutter_secure_storage)
+
+NotificationService (FLN 19 + exactAllowWhileIdle)
+
+BackgroundScheduler (WorkManager 0.9.x; guard single registration)
+
+PermissionService (POST_NOTIFICATIONS Android 13+)
+ทั้งหมดอิงสคีมา/อินวาเรียนต์จากเอกสาร v6 เพื่อให้แจ้งเตือน/พื้นหลัง/สถิติทำงานครบภายในวันนี้ครับ

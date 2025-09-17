@@ -1,0 +1,191 @@
+พร้อมลุยช่วง 09:00–09:30 เลยนะ นี่คือ “เช็กลิสต์ลงมือทันที + โค้ดตัวอย่าง” เพื่อบูตโปรเจกต์ใหม่ (Android-only) โดยยึดเวอร์ชันที่คุณกำหนด (Flutter 3.32 / Dart 3.8 / compileSdk 36 / targetSdk 36 / JDK & Kotlin JVM 17 / deps ตามรายการ) และเตรียมพื้นที่สำหรับย้ายของจากโปรเจกต์เก่าเข้ามาต่อได้เนียน ๆ
+
+ขั้นตอนเร่งด่วน (30 นาที)
+1) สร้างโปรเจกต์ใหม่ + ตั้งชื่อโฟลเดอร์
+flutter create office_syndrome_v2
+cd office_syndrome_v2
+
+
+ถ้าต้องการใช้ชื่อ package เฉพาะ ให้รันเพิ่ม:
+
+flutter create --org com.example office_syndrome_v2
+
+2) ตั้งค่า Android ให้ตรงสเปกปี 2025 (SDK 36 + JDK/Kotlin 17 + Desugaring)
+android/gradle.properties
+org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
+android.useAndroidX=true
+android.enableJetifier=true
+
+android/build.gradle (Project)
+
+ตรวจว่า repositories ครบ และ AGP เข้ากับ Flutter 3.32 (ค่าปริยายของ Flutter 3.32 ใช้งานได้)
+
+buildscript {
+  repositories { google(); mavenCentral() }
+  dependencies { classpath 'com.android.tools.build:gradle:8.6.0' }
+}
+allprojects {
+  repositories { google(); mavenCentral() }
+}
+
+android/app/build.gradle (Module)
+
+ตั้งค่า SDK 36, Java 17, Kotlin jvmTarget 17 และเปิด core library desugaring
+
+android {
+  namespace "com.example.office_syndrome_v2"
+  compileSdk 36
+
+  defaultConfig {
+    applicationId "com.example.office_syndrome_v2"
+    minSdk 26
+    targetSdk 36
+    versionCode 1
+    versionName "1.0.0"
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+    coreLibraryDesugaringEnabled true
+  }
+
+  kotlinOptions { jvmTarget = "17" }
+}
+
+dependencies {
+  coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"
+}
+
+android/app/src/main/AndroidManifest.xml
+
+เพิ่มสิทธิ์ที่ต้องใช้ (Android 13+ ต้อง runtime permission สำหรับ POST_NOTIFICATIONS)
+
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <uses-permission android:name="android.permission.VIBRATE" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+  <application
+      android:name="${applicationName}"
+      android:label="Office Syndrome Helper"
+      android:icon="@mipmap/ic_launcher">
+    <activity
+        android:name="com.example.office_syndrome_v2.MainActivity"
+        android:exported="true"
+        android:launchMode="singleTop"
+        android:theme="@style/LaunchTheme">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+    <!-- ช่องทางแจ้งเตือนจะสร้างผ่านโค้ด -->
+  </application>
+</manifest>
+
+3) ใส่ dependencies ให้ตรงเวอร์ชันที่คุณกำหนด
+
+เปิด pubspec.yaml แล้วเพิ่ม/อัปเดตดังนี้
+
+environment:
+  sdk: ">=3.8.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State
+  get: 4.6.6
+
+  # Local Storage (Offline + Encryption)
+  hive_flutter: 1.1.0
+  flutter_secure_storage: 9.0.0
+
+  # Background & Notifications
+  workmanager: 0.9.0+3
+  flutter_local_notifications: 19.0.0
+  timezone: ^0.10.0
+
+  # UI/Charts (พื้นฐาน)
+  fl_chart: ^1.1.0
+  permission_handler: ^11.3.1
+  uuid: ^4.4.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: 3.0.1
+  mockito: 5.4.4
+  golden_toolkit: 0.15.0
+
+
+จากนั้นรัน:
+
+flutter pub get
+
+4) โค้ดบูตระบบขั้นต่ำ (ให้แอปรันได้ทันที)
+
+สร้าง lib/main.dart แบบจุดสตาร์ทง่าย ๆ (ค่อยย้ายของจริงจากโปรเจกต์เก่ามาแทนในช่วงถัดไป)
+
+import 'package:flutter/material.dart';
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const App());
+}
+
+class App extends StatelessWidget {
+  const App({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Office Syndrome Helper',
+      theme: ThemeData(useMaterial3: true, colorSchemeSeed: const Color(0xFF2196F3)),
+      home: const Scaffold(
+        body: Center(child: Text('Bootstrap OK — พร้อมย้ายโค้ดจากโปรเจกต์เก่า')),
+      ),
+    );
+  }
+}
+
+
+ทดสอบรัน:
+
+flutter run
+
+5) เตรียม “พื้นที่ย้ายของ” จากโปรเจกต์เก่า (ทำไฟล์/โฟลเดอร์เปล่าไว้ก่อน)
+
+สร้างโครงที่เราจะย้าย/รีแฟกเตอร์โค้ดจริงในบล็อกถัดไป (10:00–10:50)
+
+mkdir -p lib/{app,controllers,models,services,pages,data,utils}
+mkdir -p lib/app/{routes,bindings,theme}
+mkdir -p lib/pages/{splash,setup,home,todo,settings,statistics}
+
+
+แนวทางย้าย:
+
+เวลา = นาทีตั้งแต่ 00:00 ทุกจุด (utility toMinutes/toTimeOfDay)
+
+BreakPeriod = List<Map<String,dynamic>> (ไม่ใช้ Hive Adapter)
+
+แจ้งเตือนด้วย FLN 19 + exactAllowWhileIdle, พื้นหลังด้วย Workmanager 0.9.0+3
+
+ตั้ง timezone เป็น Asia/Bangkok สำหรับ zonedSchedule
+(ยึดตามข้อกำหนดสถาปัตยกรรม/โมเดลในสเปกโครงการ)
+
+6) จุดที่มักพลาด (กันไว้ก่อน)
+
+compileSdk/targetSdk ไม่ตรง 36 → ตรวจที่ android/app/build.gradle
+
+ลืมเปิด desugaring → crash ฟีเจอร์วันที่/เวลาใน Java 17
+
+Kotlin jvmTarget ไม่ใช่ 17 → build error
+
+ไม่ขอ POST_NOTIFICATIONS (Android 13+) → แจ้งเตือนไม่ขึ้น
+
+workmanager callback ไม่ top-level → task ไม่รันหลังรีบูต
