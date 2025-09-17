@@ -1,0 +1,35 @@
+เกณฑ์ตรวจ (Acceptance Criteria) สำหรับบล็อก 10:00–10:50
+
+สัญญาโมเดล
+
+ มีไฟล์ lib/models/user_settings.dart, notification_session.dart, daily_stats.dart ตามที่ให้
+
+ UserSettings บังคับใช้:
+
+workStartMinutes < workEndMinutes และในช่วง 0..1440
+
+intervalMinutes อยู่ในช่วงที่กำหนด
+
+workingDays เฉพาะ 1..7
+
+breakPeriods ผ่าน BreakPeriodValidator.ensureValid (ไม่ซ้อน/อยู่ในวันเดียว)
+
+ NotificationSession.status ใช้ enum SessionStatus และ serialize เป็น status.name
+
+ DailyStats.successRate คืนค่าถูกต้อง (ป้องกันหารศูนย์)
+
+ยูทิลิตี้
+
+ toMinutes() / toTimeOfDay() ใช้งานได้จริง
+
+ ymdKey() คืน key “YYYY-MM-DD” ตรงตามโลคัลวันที่เครื่อง
+
+ constants.dart ระบุชื่อกล่อง Hive และ defaults ตรงตามสเป็กวันนี้
+
+โครงสร้างโปรเจกต์
+
+ มีโฟลเดอร์ lib/models และ lib/utils พร้อมไฟล์ครบ
+
+ โค้ดคอมไพล์ผ่าน (flutter analyze ไม่มี error) โดย ไม่ต้อง ติดตั้ง hive_generator/build_runner
+
+ พร้อมต่อเข้ากับ DatabaseService ที่บันทึก/อ่านเป็น Map<String,dynamic> ได้ทันที

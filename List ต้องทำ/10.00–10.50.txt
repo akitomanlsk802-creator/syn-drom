@@ -1,248 +1,365 @@
-สิ่งที่ต้องเสร็จในบล็อกนี้
+พร้อมลุยช่วง 10:00–10:50 เลย! ด้านล่างคือ
 
-โครงโฟลเดอร์ lib/ สำหรับย้ายโค้ด
+โครงไฟล์ที่ต้องมี
 
-โมเดล Hive (typeId คงที่): UserSettings(0), NotificationSession(1), DailyStats(3), SessionStatus(10)
+โมเดล/ยูทิลิตี้ “พร้อมใช้จริง” (ไม่ใช้ codegen, ไม่ต้อง hive_generator) — เก็บลง Hive เป็น Map/primitive
 
-ยูทิลเวลาแบบ “นาทีตั้งแต่ 00:00” + normalize midnight
+เช็กลิสต์ย้ายของจากโปรเจ็กต์เก่า
 
-dev deps + คำสั่ง gen adapters
+เกณฑ์ตรวจ สำหรับบล็อกนี้
 
-เช็คลิสต์รีแฟกเตอร์จากโปรเจ็กต์เก่า
+1) โครงไฟล์ (สร้างโฟลเดอร์ตามนี้)
+lib/
+  models/
+    user_settings.dart
+    notification_session.dart
+    daily_stats.dart
+  utils/
+    time_utils.dart
+    validators.dart
+    constants.dart
 
-1) สร้างโครงโฟลเดอร์ (ถ้ายังไม่ได้ทำ)
-mkdir -p lib/{app,controllers,models,services,pages,data,utils}
 
-2) ติดตั้ง dev-deps สำหรับ Hive adapters
-flutter pub add --dev hive_generator build_runner
+สาเหตุที่ใช้ Map<String,dynamic> กับ primitive: ลดความเสี่ยง build_runner + ง่ายต่อ migration วันนี้
 
-3) วางไฟล์โมเดล (คัดตามสคีมา v6)
-lib/models/user_settings.dart (typeId = 0)
-import 'package:hive/hive.dart';
+2) โค้ดไฟล์ (ก็อปวางได้ทันที)
+// FILE: lib/utils/constants.dart
+class Boxes {
+  static const String settings = 'settings_box';      // 1 แถว (key: 'settings')
+  static const String sessions = 'sessions_box';      // หลายแถว, ตาม sessionId
+  static const String dailyStats = 'daily_stats_box'; // 1 แถวต่อวันที่ (key: 'YYYY-MM-DD')
+}
 
-part 'user_settings.g.dart';
+class Consts {
+  // ค่าเริ่มต้นแนะนำ
+  static const int defaultWorkStartMinutes = 9 * 60;   // 09:00
+  static const int defaultWorkEndMinutes   = 17 * 60;  // 17:00
+  static const List<int> defaultWorkingDays = [1,2,3,4,5]; // จันทร์=1 ... อาทิตย์=7
+  static const int defaultIntervalMinutes = 60;
+  static const int defaultMaxSnoozeCount = 3;
 
-@HiveType(typeId: 0)
-class UserSettings extends HiveObject {
-  @HiveField(0)  List<int> selectedPainPointIds;
-  @HiveField(1)  int notificationIntervalMinutes;        // 30..120
-  @HiveField(2)  int workStartMinutes;                   // e.g. 540 (09:00)
-  @HiveField(3)  int workEndMinutes;                     // e.g. 1020 (17:00)
-  @HiveField(4)  List<int> workingDays;                  // 1..7 (จ..อา)
-  /// เก็บเป็น Map<String,dynamic> เพื่อลดปัญหา adapter/migration
-  /// ตัวอย่าง: {"enabledDays":[1,2,3,4,5], "startMinutes":720, "endMinutes":780, "name":"พักกลางวัน"}
-  @HiveField(5)  List<Map<String, dynamic>> breakPeriods;
+  // ขอบเขต
+  static const int minInterval = 30;
+  static const int maxInterval = 120;
+}
 
-  @HiveField(6)  bool soundEnabled;
-  @HiveField(7)  bool vibrationEnabled;
-  @HiveField(8)  bool notificationEnabled;
+// FILE: lib/utils/time_utils.dart
+import 'package:flutter/material.dart';
 
-  @HiveField(9)  int maxSnoozeCount;                     // default 3
-  @HiveField(10) bool hasRequestedPermissions;           // ขอสิทธิ์ครั้งแรกแล้วหรือยัง
-  @HiveField(11) DateTime? lastNotificationTime;         // เวลาตั้งแจ้งเตือนล่าสุด
-  @HiveField(12) String? currentSessionId;               // อ้างอิง session ปัจจุบัน (ถ้ามี)
+int toMinutes(TimeOfDay t) => t.hour * 60 + t.minute;
 
-  UserSettings({
-    required this.selectedPainPointIds,
-    required this.notificationIntervalMinutes,
-    required this.workStartMinutes,
-    required this.workEndMinutes,
-    required this.workingDays,
-    required this.breakPeriods,
-    required this.soundEnabled,
-    required this.vibrationEnabled,
-    required this.notificationEnabled,
-    required this.maxSnoozeCount,
-    required this.hasRequestedPermissions,
-    this.lastNotificationTime,
-    this.currentSessionId,
-  });
+TimeOfDay toTimeOfDay(int minutes) {
+  final h = (minutes ~/ 60) % 24;
+  final m = minutes % 60;
+  return TimeOfDay(hour: h, minute: m);
+}
 
-  /// ค่าตั้งต้นตามสเปก v6
-  factory UserSettings.defaults() => UserSettings(
-        selectedPainPointIds: [],
-        notificationIntervalMinutes: 60,
-        workStartMinutes: 9 * 60,
-        workEndMinutes: 17 * 60,
-        workingDays: [1, 2, 3, 4, 5],
-        breakPeriods: [],
-        soundEnabled: true,
-        vibrationEnabled: true,
-        notificationEnabled: true,
-        maxSnoozeCount: 3,
-        hasRequestedPermissions: false,
-        lastNotificationTime: null,
-        currentSessionId: null,
-      );
+/// แปลง DateTime -> key ของสถิติรายวัน เช่น "2025-09-17"
+String ymdKey(DateTime dt) {
+  final y = dt.year.toString().padLeft(4, '0');
+  final m = dt.month.toString().padLeft(2, '0');
+  final d = dt.day.toString().padLeft(2, '0');
+  return '$y-$m-$d';
+}
 
-  /// Validation เบื้องต้น (โยนข้อความผิดพลาดถ้าไม่ผ่าน)
-  void validate() {
-    if (notificationIntervalMinutes < 30 || notificationIntervalMinutes > 120) {
-      throw ArgumentError('interval ต้องอยู่ในช่วง 30..120 นาที');
+// FILE: lib/utils/validators.dart
+/// BreakPeriod รูปแบบ:
+/// [{"start": minutesFromMidnight, "end": minutesFromMidnight}, ...]
+class BreakPeriodValidator {
+  static void ensureValid(List<Map<String, int>> breaks) {
+    // 1) ค่า start/end ต้องอยู่ใน [0, 1440) และ start < end
+    for (final b in breaks) {
+      final s = b['start'] ?? -1;
+      final e = b['end'] ?? -1;
+      if (s < 0 || e < 0 || s >= 1440 || e > 1440) {
+        throw ArgumentError('BreakPeriod out of range (0..1440): $b');
+      }
+      if (s >= e) {
+        throw ArgumentError('BreakPeriod start must be < end: $b');
+      }
     }
-    if (workStartMinutes < 0 || workStartMinutes > 1439 ||
-        workEndMinutes   < 0 || workEndMinutes   > 1439 ||
-        workStartMinutes >= workEndMinutes) {
-      throw ArgumentError('เวลาเริ่ม/สิ้นสุดงานไม่ถูกต้อง');
-    }
-    if (workingDays.any((d) => d < 1 || d > 7)) {
-      throw ArgumentError('workingDays ต้องอยู่ในช่วง 1..7');
-    }
-    // ตรวจซ้อนช่วงพักแบบง่าย (ทับในวันเดียวกันถือว่าไม่ผ่าน)
-    for (final bp in breakPeriods) {
-      if (!(bp.containsKey('enabledDays') && bp.containsKey('startMinutes') && bp.containsKey('endMinutes'))) {
-        throw ArgumentError('breakPeriod รูปแบบไม่ถูกต้อง');
+    // 2) ต้องไม่ซ้อนกัน
+    final sorted = [...breaks]..sort((a, b) => (a['start']!).compareTo(b['start']!));
+    for (int i = 1; i < sorted.length; i++) {
+      final prev = sorted[i - 1];
+      final curr = sorted[i];
+      if (curr['start']! < prev['end']!) {
+        throw ArgumentError('BreakPeriods overlap: $prev vs $curr');
       }
     }
   }
 }
 
-lib/models/notification_session.dart (typeId = 1, 10)
-import 'package:hive/hive.dart';
+// FILE: lib/models/user_settings.dart
+import 'dart:convert';
 
-part 'notification_session.g.dart';
+import '../utils/constants.dart';
+import '../utils/validators.dart';
 
-@HiveType(typeId: 10)
-enum SessionStatus {
-  @HiveField(0) scheduled,
-  @HiveField(1) inProgress,
-  @HiveField(2) completed,
-  @HiveField(3) snoozed,
-  @HiveField(4) skipped,
-}
+/// เก็บใน Hive (box: Boxes.settings, key: 'settings') เป็น Map<String,dynamic>
+/// ไม่ต้องใช้ TypeAdapter/Generator
+class UserSettings {
+  final bool notificationsEnabled;
+  final int workStartMinutes; // 0..1439
+  final int workEndMinutes;   // 1..1440 และ > workStart
+  final List<int> workingDays; // 1=Mon .. 7=Sun
+  final int intervalMinutes;   // 30..120 (วันนี้กำหนดช่วงนี้)
+  final List<Map<String, int>> breakPeriods; // [{"start":..,"end":..}, ...] ไม่ซ้อน
+  final List<String> selectedPainPointIds;   // เลือก 1–3 จุด
+  final bool soundEnabled;     // แจ้งเตือนมีเสียงไหม
+  final bool vibrateEnabled;   // สั่นไหม
+  final int maxSnoozeCount;    // เช่น 3
 
-@HiveType(typeId: 1)
-class NotificationSession extends HiveObject {
-  @HiveField(0)  String id;                  // UUID
-  @HiveField(1)  DateTime scheduledTime;     // เวลาที่ตั้ง
-  @HiveField(2)  DateTime? actualTime;       // เวลาที่แจ้ง/เริ่มจริง
-  @HiveField(3)  int painPointId;            // 1..8
-  @HiveField(4)  List<int> treatmentIds;     // ปกติ 2 ท่า
-  @HiveField(5)  SessionStatus status;       // สถานะ
-  @HiveField(6)  int snoozeCount;            // ≤ maxSnoozeCount
-  @HiveField(7)  DateTime? completedTime;    // ต้องมีถ้า completed
-  @HiveField(8)  List<bool> treatmentCompleted; // ยาวเท่า treatmentIds
-  @HiveField(9)  int durationSeconds;        // เวลารวมที่ใช้จริง
-
-  NotificationSession({
-    required this.id,
-    required this.scheduledTime,
-    this.actualTime,
-    required this.painPointId,
-    required this.treatmentIds,
-    required this.status,
-    required this.snoozeCount,
-    this.completedTime,
-    required this.treatmentCompleted,
-    required this.durationSeconds,
+  const UserSettings({
+    required this.notificationsEnabled,
+    required this.workStartMinutes,
+    required this.workEndMinutes,
+    required this.workingDays,
+    required this.intervalMinutes,
+    required this.breakPeriods,
+    required this.selectedPainPointIds,
+    required this.soundEnabled,
+    required this.vibrateEnabled,
+    required this.maxSnoozeCount,
   });
 
-  void validate() {
-    if (treatmentCompleted.length != treatmentIds.length) {
-      throw ArgumentError('treatmentCompleted ต้องยาวเท่า treatmentIds');
-    }
-    if (status == SessionStatus.completed && completedTime == null) {
-      throw ArgumentError('completed ต้องมี completedTime');
-    }
-  }
-}
-
-lib/models/daily_stats.dart (typeId = 3)
-import 'package:hive/hive.dart';
-
-part 'daily_stats.g.dart';
-
-@HiveType(typeId: 3)
-class DailyStats extends HiveObject {
-  @HiveField(0) DateTime date;                      // แนะนำ normalize 00:00 local
-  @HiveField(1) int totalNotifications;
-  @HiveField(2) int completedSessions;
-  @HiveField(3) int snoozedSessions;
-  @HiveField(4) int skippedSessions;
-  @HiveField(5) Map<int, int> painPointFrequency;   // painPointId -> count
-  @HiveField(6) int totalDurationSeconds;
-
-  DailyStats({
-    required this.date,
-    required this.totalNotifications,
-    required this.completedSessions,
-    required this.snoozedSessions,
-    required this.skippedSessions,
-    required this.painPointFrequency,
-    required this.totalDurationSeconds,
-  });
-
-  double get successRate =>
-      totalNotifications > 0 ? (completedSessions / totalNotifications) * 100 : 0.0;
-
-  factory DailyStats.empty(DateTime d) => DailyStats(
-        date: DateTime(d.year, d.month, d.day),
-        totalNotifications: 0,
-        completedSessions: 0,
-        snoozedSessions: 0,
-        skippedSessions: 0,
-        painPointFrequency: <int, int>{},
-        totalDurationSeconds: 0,
+  factory UserSettings.defaults() => UserSettings(
+        notificationsEnabled: true,
+        workStartMinutes: Consts.defaultWorkStartMinutes,
+        workEndMinutes: Consts.defaultWorkEndMinutes,
+        workingDays: Consts.defaultWorkingDays,
+        intervalMinutes: Consts.defaultIntervalMinutes,
+        breakPeriods: const [],
+        selectedPainPointIds: const [],
+        soundEnabled: true,
+        vibrateEnabled: true,
+        maxSnoozeCount: Consts.defaultMaxSnoozeCount,
       );
+
+  UserSettings copyWith({
+    bool? notificationsEnabled,
+    int? workStartMinutes,
+    int? workEndMinutes,
+    List<int>? workingDays,
+    int? intervalMinutes,
+    List<Map<String, int>>? breakPeriods,
+    List<String>? selectedPainPointIds,
+    bool? soundEnabled,
+    bool? vibrateEnabled,
+    int? maxSnoozeCount,
+  }) {
+    return UserSettings(
+      notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
+      workStartMinutes: workStartMinutes ?? this.workStartMinutes,
+      workEndMinutes: workEndMinutes ?? this.workEndMinutes,
+      workingDays: workingDays ?? this.workingDays,
+      intervalMinutes: intervalMinutes ?? this.intervalMinutes,
+      breakPeriods: breakPeriods ?? this.breakPeriods,
+      selectedPainPointIds: selectedPainPointIds ?? this.selectedPainPointIds,
+      soundEnabled: soundEnabled ?? this.soundEnabled,
+      vibrateEnabled: vibrateEnabled ?? this.vibrateEnabled,
+      maxSnoozeCount: maxSnoozeCount ?? this.maxSnoozeCount,
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'notificationsEnabled': notificationsEnabled,
+      'workStartMinutes': workStartMinutes,
+      'workEndMinutes': workEndMinutes,
+      'workingDays': workingDays,
+      'intervalMinutes': intervalMinutes,
+      'breakPeriods': breakPeriods, // already list of map<int,int>
+      'selectedPainPointIds': selectedPainPointIds,
+      'soundEnabled': soundEnabled,
+      'vibrateEnabled': vibrateEnabled,
+      'maxSnoozeCount': maxSnoozeCount,
+    };
+  }
+
+  factory UserSettings.fromMap(Map<String, dynamic> map) {
+    final breaks = (map['breakPeriods'] as List?)
+            ?.map((e) => Map<String, int>.from((e as Map)))
+            .toList() ??
+        <Map<String, int>>[];
+
+    BreakPeriodValidator.ensureValid(breaks);
+
+    final ws = map['workStartMinutes'] as int? ?? Consts.defaultWorkStartMinutes;
+    final we = map['workEndMinutes'] as int? ?? Consts.defaultWorkEndMinutes;
+    if (ws < 0 || ws >= 1440 || we <= 0 || we > 1440 || ws >= we) {
+      throw ArgumentError('Invalid work time range: start=$ws end=$we');
+    }
+
+    final interval = map['intervalMinutes'] as int? ?? Consts.defaultIntervalMinutes;
+    if (interval < Consts.minInterval || interval > Consts.maxInterval) {
+      throw ArgumentError('Invalid intervalMinutes: $interval');
+    }
+
+    final days = List<int>.from(map['workingDays'] ?? Consts.defaultWorkingDays);
+    for (final d in days) {
+      if (d < 1 || d > 7) {
+        throw ArgumentError('Invalid working day: $d');
+      }
+    }
+
+    return UserSettings(
+      notificationsEnabled: map['notificationsEnabled'] as bool? ?? true,
+      workStartMinutes: ws,
+      workEndMinutes: we,
+      workingDays: days,
+      intervalMinutes: interval,
+      breakPeriods: breaks,
+      selectedPainPointIds:
+          List<String>.from(map['selectedPainPointIds'] ?? const <String>[]),
+      soundEnabled: map['soundEnabled'] as bool? ?? true,
+      vibrateEnabled: map['vibrateEnabled'] as bool? ?? true,
+      maxSnoozeCount: map['maxSnoozeCount'] as int? ?? Consts.defaultMaxSnoozeCount,
+    );
+  }
+
+  String toJson() => jsonEncode(toMap());
+  factory UserSettings.fromJson(String src) =>
+      UserSettings.fromMap(jsonDecode(src) as Map<String, dynamic>);
 }
 
-(เสริม) โมเดลข้อมูลคงที่ที่ไม่ลง Hive
-lib/models/pain_point.dart
-class PainPoint {
-  final int id;               // 1..8
-  final String name;
-  final String description;
-  final List<int> treatmentIds;
+// FILE: lib/models/notification_session.dart
+import 'dart:convert';
 
-  const PainPoint({required this.id, required this.name, required this.description, required this.treatmentIds});
+enum SessionStatus { scheduled, completed, snoozed, skipped }
+
+class NotificationSession {
+  final String id;                 // uuid
+  final int scheduledEpochSec;     // เวลาแจ้งเตือน (UTC epoch seconds)
+  final String painPointId;        // จุดที่สุ่มในรอบนี้
+  final List<String> exerciseIds;  // ท่าที่สุ่ม 1–2 ท่า
+  final SessionStatus status;
+
+  const NotificationSession({
+    required this.id,
+    required this.scheduledEpochSec,
+    required this.painPointId,
+    required this.exerciseIds,
+    required this.status,
+  });
+
+  NotificationSession copyWith({
+    String? id,
+    int? scheduledEpochSec,
+    String? painPointId,
+    List<String>? exerciseIds,
+    SessionStatus? status,
+  }) {
+    return NotificationSession(
+      id: id ?? this.id,
+      scheduledEpochSec: scheduledEpochSec ?? this.scheduledEpochSec,
+      painPointId: painPointId ?? this.painPointId,
+      exerciseIds: exerciseIds ?? this.exerciseIds,
+      status: status ?? this.status,
+    );
+  }
+
+  Map<String, dynamic> toMap() => {
+        'id': id,
+        'scheduledEpochSec': scheduledEpochSec,
+        'painPointId': painPointId,
+        'exerciseIds': exerciseIds,
+        'status': status.name,
+      };
+
+  factory NotificationSession.fromMap(Map<String, dynamic> map) {
+    final stStr = map['status'] as String? ?? 'scheduled';
+    final st = SessionStatus.values.firstWhere(
+      (e) => e.name == stStr,
+      orElse: () => SessionStatus.scheduled,
+    );
+    return NotificationSession(
+      id: map['id'] as String,
+      scheduledEpochSec: map['scheduledEpochSec'] as int,
+      painPointId: map['painPointId'] as String,
+      exerciseIds: List<String>.from(map['exerciseIds'] ?? const <String>[]),
+      status: st,
+    );
+  }
+
+  String toJson() => jsonEncode(toMap());
+  factory NotificationSession.fromJson(String src) =>
+      NotificationSession.fromMap(jsonDecode(src) as Map<String, dynamic>);
 }
 
-lib/models/treatment.dart
-class Treatment {
-  final int id;
-  final String name;
-  final String description;
-  final int durationSeconds;  // ต่อท่า
-  final int painPointId;      // 1..8
+// FILE: lib/models/daily_stats.dart
+import 'dart:convert';
 
-  const Treatment({required this.id, required this.name, required this.description, required this.durationSeconds, required this.painPointId});
+class DailyStats {
+  final String ymd;   // "YYYY-MM-DD"
+  final int scheduled;
+  final int completed;
+  final int snoozed;
+  final int skipped;
+
+  const DailyStats({
+    required this.ymd,
+    required this.scheduled,
+    required this.completed,
+    required this.snoozed,
+    required this.skipped,
+  });
+
+  DailyStats add({
+    int scheduled = 0,
+    int completed = 0,
+    int snoozed = 0,
+    int skipped = 0,
+  }) {
+    return DailyStats(
+      ymd: ymd,
+      scheduled: this.scheduled + scheduled,
+      completed: this.completed + completed,
+      snoozed: this.snoozed + snoozed,
+      skipped: this.skipped + skipped,
+    );
+  }
+
+  double get successRate {
+    final denom = scheduled == 0 ? 1 : scheduled;
+    return completed / denom;
+  }
+
+  Map<String, dynamic> toMap() => {
+        'ymd': ymd,
+        'scheduled': scheduled,
+        'completed': completed,
+        'snoozed': snoozed,
+        'skipped': skipped,
+      };
+
+  factory DailyStats.fromMap(Map<String, dynamic> map) => DailyStats(
+        ymd: map['ymd'] as String,
+        scheduled: map['scheduled'] as int? ?? 0,
+        completed: map['completed'] as int? ?? 0,
+        snoozed: map['snoozed'] as int? ?? 0,
+        skipped: map['skipped'] as int? ?? 0,
+      );
+
+  String toJson() => jsonEncode(toMap());
+  factory DailyStats.fromJson(String src) =>
+      DailyStats.fromMap(jsonDecode(src) as Map<String, dynamic>);
 }
 
-4) ยูทิลเวลาแบบ “นาทีตั้งแต่ 00:00”
-lib/utils/date_utils.dart
-import 'package:flutter/material.dart';
+3) เช็กลิสต์ย้าย/รีแฟกเตอร์จากโปรเจกต์เก่า → มาใช้โมเดลใหม่
 
-int toMinutes(TimeOfDay t) => t.hour * 60 + t.minute;
-TimeOfDay toTimeOfDay(int minutes) =>
-    TimeOfDay(hour: (minutes ~/ 60) % 24, minute: minutes % 60);
+ แทนค่าที่เคยเก็บเป็น TimeOfDay/DateTime-of-day ด้วย int นาที (0..1439)
 
-DateTime normalizeToMidnight(DateTime d) => DateTime(d.year, d.month, d.day);
+ ลบ Hive Adapter เก่าของ BreakPeriod → ใช้รูปแบบ List<Map<String,int>> ตามไฟล์ใหม่
 
-5) สั่ง generate Hive adapters
+ ก่อนบันทึก UserSettings ให้เรียก BreakPeriodValidator.ensureValid(breaks) เสมอ
 
-(ต้องทำหลังจากเพิ่มไฟล์ .dart ข้างบนครบ)
+ ยืนยันว่า interval อยู่ใน {30,45,60,90,120} (หรือ 30..120 ตามที่กำหนดวันนี้)
 
-flutter pub run build_runner build -d
+ วันทำงานใช้เลข 1..7 เท่านั้น
 
-6) เช็คลิสต์รีแฟกเตอร์จากโปรเจ็กต์เก่า → โค้ดใหม่ (ทำทันทีหลัง gen)
+ ฝั่งสถิติ (DailyStats) ให้ key เป็น ymdKey(now) เพื่ออ้างอิงกล่อง daily_stats_box
 
- แปลงทุกฟิลด์เวลาเป็น “นาที” (ห้ามเก็บ TimeOfDay ลง Hive)
+ Session ใส่ status.name เวลาเก็บ/โหลดเพื่อให้อ่านง่าย ข้าม TypeAdapter
 
- เปลี่ยน BreakPeriod เดิม (ที่เคยเป็น @HiveType) → เก็บเป็น Map<String,dynamic> ใน UserSettings.breakPeriods
-
- ตรวจสอบการใช้ enum/TypeId ให้ตรง: SessionStatus(10), UserSettings(0), NotificationSession(1), DailyStats(3)
-
- จุดที่เรียก scheduler ให้ไปอ่านจากนาที และตรวจไม่ซ้อนช่วงพัก
-
- ถ้าโปรเจ็กต์เก่าเคยมี adapter ของ BreakPeriod: ลบไฟล์ *.g.dart ของมันออก และล้างด้วย flutter clean → flutter pub get → gen ใหม่
-
-7) ต่อบล็อกถัดไป (11:00 โดยประมาณ): Services แกนหลัก
-
-DatabaseService (init Hive + encryption key จาก flutter_secure_storage)
-
-NotificationService (FLN 19 + exactAllowWhileIdle)
-
-BackgroundScheduler (WorkManager 0.9.x; guard single registration)
-
-PermissionService (POST_NOTIFICATIONS Android 13+)
-ทั้งหมดอิงสคีมา/อินวาเรียนต์จากเอกสาร v6 เพื่อให้แจ้งเตือน/พื้นหลัง/สถิติทำงานครบภายในวันนี้ครับ
+Tip: ถ้ามีข้อมูลเก่าใน Hive อยู่แล้ว ให้ “อ่านเป็น Map” แล้วแปลงมาสคีมาใหม่ทีเดียวตอนเปิดแอป (migration function ใน DatabaseService)
